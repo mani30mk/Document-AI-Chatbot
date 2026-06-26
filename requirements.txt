@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-multipart
+langchain
+langchain-community
+langchain-huggingface
+langchain-chroma
+langchain-google-genai
+sentence-transformers
+pypdf
+unstructured
+python-docx
+python-pptx
+chromadb
