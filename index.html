@@ -1875,12 +1875,17 @@ function renderPptSlide(idx) {
     if (s.images && s.images.length > 0) {
       bodyContent += `
         <div class="ppt-images-container">
-          ${s.images.map((img, imgIdx) => `
-            <div class="ppt-img-wrapper" onclick="openImageModal('${img}', 'Slide ${s.slide_number} - Diagram ${imgIdx + 1}')" title="Click to zoom diagram">
-              <img src="${img}" alt="Slide ${s.slide_number} Figure ${imgIdx + 1}" class="ppt-slide-img" />
+          ${s.images.map((img, imgIdx) => {
+            const imgSrc = (img.startsWith('http://') || img.startsWith('https://') || img.startsWith('data:'))
+              ? img
+              : (API_BASE.replace(/\/+$/, '') + (img.startsWith('/') ? img : '/' + img));
+            return `
+            <div class="ppt-img-wrapper" onclick="openImageModal('${imgSrc}', 'Slide ${s.slide_number} - Diagram ${imgIdx + 1}')" title="Click to zoom diagram">
+              <img src="${imgSrc}" alt="Slide ${s.slide_number} Figure ${imgIdx + 1}" class="ppt-slide-img" />
               <div class="ppt-img-zoom-hint">🔍 Zoom</div>
             </div>
-          `).join('')}
+            `;
+          }).join('')}
         </div>
       `;
     }

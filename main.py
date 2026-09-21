@@ -167,16 +167,74 @@ Context:
 ])
 
 
+# ── Gemini API Keys Management & Rotation ──────────────────────────────────
+_current_key_index: int = 0
+
+
+def get_gemini_api_keys() -> list[str]:
+    """
+    Retrieve Gemini API keys from GEMINI_API_KEY environment variable.
+    Supports comma-separated, semicolon-separated, or newline-separated multiple keys
+    for quota failover (e.g. GEMINI_API_KEY="key1,key2,key3").
+    """
+    raw = os.getenv("GEMINI_API_KEY", "")
+    if not raw:
+        return []
+    keys = [
+        k.strip()
+        for k in raw.replace("\n", ",").replace(";", ",").split(",")
+        if k.strip()
+    ]
+    return keys
+
+
+def get_current_api_key() -> str | None:
+    """Get the currently active API key."""
+    keys = get_gemini_api_keys()
+    if not keys:
+        return None
+    global _current_key_index
+    return keys[_current_key_index % len(keys)]
+
+
+def rotate_api_key() -> str | None:
+    """Rotate to the next API key in round-robin fashion."""
+    keys = get_gemini_api_keys()
+    if not keys:
+        return None
+    global _current_key_index
+    _current_key_index = (_current_key_index + 1) % len(keys)
+    masked = keys[_current_key_index][:6] + "..." + keys[_current_key_index][-4:] if len(keys[_current_key_index]) > 10 else "***"
+    print(f"Rotated to API key #{_current_key_index + 1}/{len(keys)} ({masked})")
+    return keys[_current_key_index]
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    """Detect if an exception is due to 429 quota exhaustion or rate limiting."""
+    msg = str(exc).lower()
+    return any(
+        s in msg
+        for s in [
+            "429",
+            "resource_exhausted",
+            "resourceexhausted",
+            "quota",
+            "rate limit",
+            "ratelimit",
+            "too many requests",
+        ]
+    )
+
+
 AVAILABLE_GEMINI_MODELS: list[str] = []
 
 
-def get_available_models() -> list[str]:
-    """Query Google API for active models supporting generateContent for this API key."""
+def get_available_models(api_key: str | None = None) -> list[str]:
+    """Query Google API for active models supporting generateContent for Gemini API key."""
     global AVAILABLE_GEMINI_MODELS
     if AVAILABLE_GEMINI_MODELS:
         return AVAILABLE_GEMINI_MODELS
 
-    key = os.getenv("GEMINI_API_KEY")
     candidates = [
         "gemini-2.5-flash",
         "gemini-2.5-pro",
@@ -185,46 +243,55 @@ def get_available_models() -> list[str]:
         "gemini-1.5-flash",
         "gemini-1.5-pro",
     ]
-    if not key:
+
+    keys = [api_key] if api_key else get_gemini_api_keys()
+    if not keys:
         return candidates
 
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
-        req = urllib.request.Request(url, headers={"User-Agent": "DocumentAI/1.0"})
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            models = data.get("models", [])
-            discovered = []
-            for m in models:
-                methods = m.get("supportedGenerationMethods", [])
-                name = m.get("name", "").replace("models/", "")
-                if "generateContent" in methods and "gemini" in name:
-                    discovered.append(name)
-            
-            # Prioritize flash models
-            flash_models = [m for m in discovered if "flash" in m]
-            other_models = [m for m in discovered if "flash" not in m]
-            sorted_models = flash_models + other_models
-            if sorted_models:
-                AVAILABLE_GEMINI_MODELS = sorted_models
-                print(f"Discovered {len(AVAILABLE_GEMINI_MODELS)} available Gemini models: {AVAILABLE_GEMINI_MODELS[:5]}")
-                return AVAILABLE_GEMINI_MODELS
-    except Exception as e:
-        print(f"Notice: Model discovery via API ({e}), using default candidates.")
+    for key in keys:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+            req = urllib.request.Request(url, headers={"User-Agent": "DocumentAI/1.0"})
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                models = data.get("models", [])
+                discovered = []
+                for m in models:
+                    methods = m.get("supportedGenerationMethods", [])
+                    name = m.get("name", "").replace("models/", "")
+                    name_lower = name.lower()
+                    if (
+                        "generateContent" in methods
+                        and "gemini" in name_lower
+                        and not any(x in name_lower for x in ["tts", "embed", "imagen", "robotics", "computer-use"])
+                    ):
+                        discovered.append(name)
+
+                # Prioritize flash models
+                flash_models = [m for m in discovered if "flash" in m]
+                other_models = [m for m in discovered if "flash" not in m]
+                sorted_models = flash_models + other_models
+                if sorted_models:
+                    AVAILABLE_GEMINI_MODELS = sorted_models
+                    print(f"Discovered {len(AVAILABLE_GEMINI_MODELS)} available Gemini models: {AVAILABLE_GEMINI_MODELS[:5]}")
+                    return AVAILABLE_GEMINI_MODELS
+        except Exception as e:
+            print(f"Notice: Model discovery via API key ({e}), trying next candidate/defaults.")
+            continue
 
     AVAILABLE_GEMINI_MODELS = candidates
     return AVAILABLE_GEMINI_MODELS
 
 
-def get_llm(model_name: str | None = None) -> ChatGoogleGenerativeAI:
-    key = os.getenv("GEMINI_API_KEY")
+def get_llm(model_name: str | None = None, api_key: str | None = None) -> ChatGoogleGenerativeAI:
+    key = api_key or get_current_api_key()
     if not key:
         raise ValueError(
             "GEMINI_API_KEY environment variable is not set. "
             "Please configure GEMINI_API_KEY in Render or in your .env file."
         )
     if not model_name:
-        models = get_available_models()
+        models = get_available_models(key)
         model_name = models[0] if models else "gemini-2.5-flash"
 
     return ChatGoogleGenerativeAI(
@@ -259,7 +326,16 @@ def extract_shape_images(shape):
     return imgs
 
 
-def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
+def load_pptx(path: str, session_id: str | None = None) -> tuple[list[Document], list[dict]]:
+    # Deduce session_id from path if not explicitly passed
+    if not session_id:
+        norm_path = os.path.normpath(path)
+        parts = norm_path.split(os.sep)
+        if "uploaded_docs" in parts:
+            idx = parts.index("uploaded_docs")
+            if len(parts) > idx + 1:
+                session_id = parts[idx + 1]
+
     prs = Presentation(path)
     docs = []
     slides_data = []
@@ -318,12 +394,22 @@ def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
                             ratio = 900 / pil_img.width
                             new_size = (900, int(pil_img.height * ratio))
                             pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
-                        buf = io.BytesIO()
                         pil_format = "PNG" if pil_img.mode in ("RGBA", "P") else "JPEG"
-                        pil_img.save(buf, format=pil_format, quality=85)
-                        b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
-                        mime = f"image/{pil_format.lower()}"
-                        images.append(f"data:{mime};base64,{b64_str}")
+
+                        if session_id:
+                            img_dir = os.path.join(UPLOAD_DIR, session_id, "slide_images")
+                            os.makedirs(img_dir, exist_ok=True)
+                            ext_name = "png" if pil_format == "PNG" else "jpg"
+                            img_filename = f"slide_{slide_idx + 1}_img_{len(images) + 1}.{ext_name}"
+                            img_file_path = os.path.join(img_dir, img_filename)
+                            pil_img.save(img_file_path, format=pil_format, quality=85)
+                            images.append(f"/slide_image/{session_id}/{img_filename}")
+                        else:
+                            buf = io.BytesIO()
+                            pil_img.save(buf, format=pil_format, quality=85)
+                            b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
+                            mime = f"image/{pil_format.lower()}"
+                            images.append(f"data:{mime};base64,{b64_str}")
                     except Exception as img_err:
                         print(f"Notice: Image extraction ({img_err})")
             except Exception:
@@ -363,17 +449,17 @@ def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
     return docs, slides_data
 
 
-def load_file(path: str, ext: str) -> tuple[list[Document], list[dict] | None]:
+def load_file(path: str, ext: str, session_id: str | None = None) -> tuple[list[Document], list[dict] | None]:
     if ext == ".pdf":
         return PyPDFLoader(path).load(), None
     elif ext == ".docx":
         return load_docx(path), None
     elif ext in (".pptx", ".ppt"):
-        return load_pptx(path)
+        return load_pptx(path, session_id=session_id)
     elif ext == ".txt":
-        return TextLoader(path).load(), None
+        return TextLoader(path, encoding="utf-8").load(), None
     else:
-        raise ValueError(f"Unsupported file type: {ext}")
+        raise ValueError(f"Unsupported file extension: {ext}")
 
 
 def format_docs(docs):
@@ -567,6 +653,30 @@ def get_raw_file(session_id: str, filename: str):
     raise HTTPException(status_code=404, detail="File not found.")
 
 
+@app.get("/slide_image/{session_id}/{filename}")
+def get_slide_image(session_id: str, filename: str):
+    """Serve slide images extracted from PPTX presentations."""
+    clean_session_id = os.path.basename(session_id)
+    clean_filename = os.path.basename(filename)
+
+    expected_dir = os.path.abspath(os.path.join(UPLOAD_DIR, clean_session_id, "slide_images"))
+    img_path = os.path.abspath(os.path.join(expected_dir, clean_filename))
+
+    if not img_path.startswith(expected_dir) or not os.path.isfile(img_path):
+        raise HTTPException(status_code=404, detail="Slide image not found.")
+
+    ext = os.path.splitext(clean_filename)[1].lower()
+    media_type = "image/png" if ext == ".png" else "image/jpeg"
+    return FileResponse(
+        img_path,
+        media_type=media_type,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=86400",
+        },
+    )
+
+
 @app.post("/upload/{session_id}")
 async def upload_files(
     session_id: str,
@@ -601,7 +711,7 @@ async def upload_files(
             f.write(file_bytes)
 
         try:
-            docs, slides_info = load_file(saved_path, ext)
+            docs, slides_info = load_file(saved_path, ext, session_id=session_id)
             all_docs.extend(docs)
             uploaded_names.append(uf.filename)
             if slides_info:
@@ -761,25 +871,41 @@ async def ask(req: AskRequest):
     if not context and sid in session_docs:
         context = "\n\n".join(list(session_docs[sid].values()))[:4000]
 
-    models_to_try = get_available_models()[:2]
+    models_to_try = get_available_models()[:3]
+    keys = get_gemini_api_keys()
+    if not keys:
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in Render or in your .env file.",
+        )
+
     answer = None
     last_error = None
 
     for m_name in models_to_try:
-        try:
-            curr_llm = get_llm(m_name)
-            chain = RAG_PROMPT | curr_llm | StrOutputParser()
-            answer = chain.invoke({
-                "context": context,
-                "chat_history": history,
-                "question": req.question,
-            })
-            if answer:
-                break
-        except Exception as llm_err:
-            print(f"Model {m_name} failed ({llm_err}), trying next candidate...")
-            last_error = llm_err
-            continue
+        for _ in range(len(keys)):
+            current_key = get_current_api_key()
+            try:
+                curr_llm = get_llm(m_name, api_key=current_key)
+                chain = RAG_PROMPT | curr_llm | StrOutputParser()
+                answer = chain.invoke({
+                    "context": context,
+                    "chat_history": history,
+                    "question": req.question,
+                })
+                if answer:
+                    break
+            except Exception as llm_err:
+                last_error = llm_err
+                if is_rate_limit_error(llm_err):
+                    print(f"Rate limit / 429 on model {m_name} with current key: {llm_err}. Rotating key...")
+                    rotate_api_key()
+                    continue
+                else:
+                    print(f"Model {m_name} failed ({llm_err}), falling back to next model candidate...")
+                    break
+        if answer:
+            break
 
     if not answer:
         raise HTTPException(status_code=500, detail=f"AI model error: {str(last_error)}")
@@ -871,7 +997,7 @@ async def summarize(req: SummarizeRequest):
         if found_file:
             try:
                 ext = os.path.splitext(found_file)[1].lower()
-                docs, _ = load_file(found_file, ext)
+                docs, _ = load_file(found_file, ext, session_id=sid)
                 if docs:
                     text = "\n\n".join(d.page_content for d in docs)
                     session_docs.setdefault(sid, {})[fname] = text
@@ -918,21 +1044,37 @@ async def summarize(req: SummarizeRequest):
         "You are an expert summarizer. Please provide a comprehensive and concise summary of the following document:\n\n{text}"
     )
 
-    models_to_try = get_available_models()[:2]
+    models_to_try = get_available_models()[:3]
+    keys = get_gemini_api_keys()
+    if not keys:
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in Render or in your .env file.",
+        )
+
     summary = None
     last_error = None
 
     for m_name in models_to_try:
-        try:
-            curr_llm = get_llm(m_name)
-            chain = prompt | curr_llm | StrOutputParser()
-            summary = chain.invoke({"text": text[:20000]})
-            if summary:
-                break
-        except Exception as e:
-            print(f"Summarize model {m_name} failed ({e}), trying next candidate...")
-            last_error = e
-            continue
+        for _ in range(len(keys)):
+            current_key = get_current_api_key()
+            try:
+                curr_llm = get_llm(m_name, api_key=current_key)
+                chain = prompt | curr_llm | StrOutputParser()
+                summary = chain.invoke({"text": text[:20000]})
+                if summary:
+                    break
+            except Exception as e:
+                last_error = e
+                if is_rate_limit_error(e):
+                    print(f"Summarize rate limit / 429 on model {m_name} with current key: {e}. Rotating key...")
+                    rotate_api_key()
+                    continue
+                else:
+                    print(f"Summarize model {m_name} failed ({e}), falling back to next model candidate...")
+                    break
+        if summary:
+            break
 
     if not summary:
         raise HTTPException(status_code=500, detail=f"AI model error: {str(last_error)}")
