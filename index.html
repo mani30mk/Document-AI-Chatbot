@@ -2121,7 +2121,15 @@ function renderDocCurrentMode() {
               <strong>💡 Localhost Notice:</strong> Microsoft Office Online Viewer requires a public URL. When deployed on Render (<a href="https://document-ai-chatbot-71ey.onrender.com" target="_blank" style="color: inherit; text-decoration: underline;">document-ai-chatbot-71ey.onrender.com</a>), your original ${ext.toUpperCase()} file renders with 100% fidelity here. In local mode, you can <a href="javascript:downloadCurrentFile()" style="color: inherit; font-weight: bold; text-decoration: underline;">download the original file</a> or view the <strong>Outline</strong> tab.
             </div>
           </div>
-        ` : ''}
+        ` : `
+          <div class="ppt-local-notice" style="background: rgba(59, 110, 246, 0.08); border-color: rgba(59, 110, 246, 0.2); font-size: 11px; padding: 6px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <span>💡 Viewing via Microsoft Online. If it shows <em>"File not found"</em> (e.g. during server cold start), switch to:</span>
+            <div style="display: flex; gap: 6px; flex-shrink: 0;">
+              <button class="btn btn-sm" onclick="switchDocViewMode('outline')" style="padding: 2px 8px; font-size: 11px; cursor: pointer;">📊 Slides / Text</button>
+              <button class="btn btn-sm" onclick="switchDocViewMode('google')" style="padding: 2px 8px; font-size: 11px; cursor: pointer;">🌐 Google Viewer</button>
+            </div>
+          </div>
+        `}
         <iframe class="ppt-view-iframe" src="${officeUrl}" allowfullscreen="true" title="Original ${ext.toUpperCase()} File"></iframe>
       `;
     } else {

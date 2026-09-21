@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # ── LangChain imports ───────────────────────────────────────────────────────
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
@@ -41,6 +41,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 import tempfile
 import base64
 import io
+import gc
 from PIL import Image
 import urllib.request
 import urllib.parse
@@ -69,7 +70,8 @@ UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploaded_docs")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 SESSIONS_FILE = os.path.join(UPLOAD_DIR, "sessions.json")
 
-# In-memory session fallbacks
+# In-memory session fallbacks (capped to 3 active vectorstores to conserve Render 512MB RAM)
+MAX_CACHED_VECTORSTORES = 3
 session_vectorstores: dict[str, Chroma] = {}
 session_histories: dict[str, list] = {}
 session_files: dict[str, list[str]] = {}
@@ -88,10 +90,21 @@ def get_or_load_vectorstore(session_id: str) -> Chroma | None:
         try:
             embeddings = get_embeddings()
             vs = Chroma(persist_directory=vector_dir, embedding_function=embeddings)
+            # Evict oldest vectorstore if exceeding cache limit
+            if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
+                oldest_sid = next(iter(session_vectorstores))
+                del session_vectorstores[oldest_sid]
+                gc.collect()
             session_vectorstores[session_id] = vs
             return vs
         except Exception as e:
             print(f"Notice: Could not load Chroma from disk for {session_id} ({e})")
+            # If dimension mismatch or corrupted collection, clean it up
+            try:
+                import shutil
+                shutil.rmtree(vector_dir, ignore_errors=True)
+            except Exception:
+                pass
     return None
 
 
@@ -466,7 +479,7 @@ def format_docs(docs):
     return "\n\n".join(d.page_content for d in docs)
 
 
-def get_embeddings() -> FastEmbedEmbeddings:
+def get_embeddings():
     global EMBEDDINGS, EMBEDDINGS_ERROR
 
     if EMBEDDINGS is not None:
@@ -475,9 +488,24 @@ def get_embeddings() -> FastEmbedEmbeddings:
     if EMBEDDINGS_ERROR is not None:
         raise EMBEDDINGS_ERROR
 
+    # 1. Primary: GoogleGenerativeAIEmbeddings (cloud API, 0 MB local RAM used)
+    # Saves ~250MB RAM compared to local ONNX models, preventing Render 512MB OOM
+    key = get_current_api_key()
+    if key:
+        try:
+            EMBEDDINGS = GoogleGenerativeAIEmbeddings(
+                model="models/text-embedding-004",
+                google_api_key=key,
+            )
+            print("Using GoogleGenerativeAIEmbeddings (cloud API - 0 MB local RAM).")
+            return EMBEDDINGS
+        except Exception as g_err:
+            print(f"Notice: Google embeddings init ({g_err}), falling back to FastEmbed...")
+
+    # 2. Fallback: FastEmbedEmbeddings (local ONNX model) only if no API key is available
     try:
-        # BAAI/bge-small-en-v1.5 runs locally via ONNX Runtime (~120MB RAM, 0 API tokens used)
         EMBEDDINGS = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+        print("Using FastEmbedEmbeddings (local ONNX - ~150MB RAM).")
         return EMBEDDINGS
     except Exception as exc:
         EMBEDDINGS_ERROR = exc
@@ -602,16 +630,20 @@ import threading
 
 @app.on_event("startup")
 def startup_prewarm():
-    """Pre-warm FastEmbed in background so first upload does not stall."""
+    """Load sessions and conditionally prewarm only if no cloud API key is configured."""
     load_sessions_from_disk()
 
-    def _prewarm():
-        try:
-            get_embeddings()
-            print("FastEmbed model pre-warmed successfully.")
-        except Exception as err:
-            print(f"Notice: FastEmbed pre-warm ({err})")
-    threading.Thread(target=_prewarm, daemon=True).start()
+    # Only prewarm local FastEmbed if no Gemini API key is configured
+    if not get_gemini_api_keys():
+        def _prewarm():
+            try:
+                get_embeddings()
+                print("FastEmbed model pre-warmed successfully.")
+            except Exception as err:
+                print(f"Notice: FastEmbed pre-warm ({err})")
+        threading.Thread(target=_prewarm, daemon=True).start()
+    else:
+        print("Gemini API key detected: Skipping local ONNX pre-warm to conserve Render RAM.")
 
 
 @app.get("/raw/{session_id}/{filename}")
@@ -775,9 +807,17 @@ async def upload_files(
                 [c.page_content for c in chunks]
             )
         else:
+            if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
+                oldest_sid = next(iter(session_vectorstores))
+                del session_vectorstores[oldest_sid]
             session_vectorstores[session_id] = Chroma.from_documents(
                 chunks, embeddings, persist_directory=vector_dir
             )
+
+    # Clean up upload buffers and trigger garbage collection immediately
+    del all_docs
+    del chunks
+    gc.collect()
 
     session_files[session_id].extend(uploaded_names)
     save_sessions_to_disk()
