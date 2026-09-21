@@ -467,9 +467,11 @@ def get_raw_file(session_id: str, filename: str):
             media_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         elif lower_name.endswith(".pdf"):
             media_type = "application/pdf"
-        elif lower_name.endswith(".docx"):
+        elif lower_name.endswith((".docx", ".doc")):
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        elif lower_name.endswith(".txt"):
+        elif lower_name.endswith((".xlsx", ".xls")):
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        elif lower_name.endswith((".txt", ".csv", ".md", ".py", ".json", ".log")):
             media_type = "text/plain; charset=utf-8"
         return FileResponse(
             file_path,

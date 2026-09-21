@@ -1501,91 +1501,152 @@ window.addEventListener('keydown', e => {
   }
 });
 
-async function loadPptxViewer(filename, cachedSlides) {
-  const container = document.getElementById('pptViewerMount');
+let currentDocMode = 'original'; // 'original' | 'google' | 'outline'
+
+function loadUniversalDocumentViewer(f) {
+  const container = document.getElementById('docViewerMount');
   if (!container) return;
 
-  currentPptFilename = filename;
+  const ext = (f.ext || f.name.split('.').pop()).toLowerCase();
 
-  // Pre-load slides in background for outline mode
-  if (cachedSlides && cachedSlides.length) {
-    currentPptSlides = cachedSlides;
-  } else {
-    fetch(`${API_BASE}/slides/${sessionId}/${encodeURIComponent(filename)}`)
-      .then(r => r.json())
-      .then(d => {
-        if (d.slides) {
-          currentPptSlides = d.slides;
-          if (activeIdx !== null && files[activeIdx]) {
-            files[activeIdx].slides = d.slides;
+  // If PPT, pre-fetch slides in background for outline mode
+  if (ext === 'pptx' || ext === 'ppt') {
+    currentPptFilename = f.name;
+    if (f.slides && f.slides.length) {
+      currentPptSlides = f.slides;
+    } else {
+      fetch(`${API_BASE}/slides/${sessionId}/${encodeURIComponent(f.name)}`)
+        .then(r => r.json())
+        .then(d => {
+          if (d.slides) {
+            currentPptSlides = d.slides;
+            f.slides = d.slides;
             saveLocalState();
           }
-        }
-      })
-      .catch(() => {});
+        })
+        .catch(() => {});
+    }
+  }
+
+  // Tabs based on document type
+  let tabsHtml = '';
+  if (ext === 'pptx' || ext === 'ppt') {
+    tabsHtml = `
+      <button class="ppt-view-tab ${currentDocMode === 'original' ? 'active' : ''}" data-mode="original" onclick="switchDocViewMode('original')">
+        🖥️ Original Presentation
+      </button>
+      <button class="ppt-view-tab ${currentDocMode === 'google' ? 'active' : ''}" data-mode="google" onclick="switchDocViewMode('google')">
+        🌐 Google Viewer
+      </button>
+      <button class="ppt-view-tab ${currentDocMode === 'outline' ? 'active' : ''}" data-mode="outline" onclick="switchDocViewMode('outline')">
+        📑 Slide Outline & Content
+      </button>
+    `;
+  } else if (ext === 'docx' || ext === 'doc') {
+    tabsHtml = `
+      <button class="ppt-view-tab ${currentDocMode === 'original' ? 'active' : ''}" data-mode="original" onclick="switchDocViewMode('original')">
+        📄 Original Word Document
+      </button>
+      <button class="ppt-view-tab ${currentDocMode === 'google' ? 'active' : ''}" data-mode="google" onclick="switchDocViewMode('google')">
+        🌐 Google Docs Viewer
+      </button>
+      <button class="ppt-view-tab ${currentDocMode === 'outline' ? 'active' : ''}" data-mode="outline" onclick="switchDocViewMode('outline')">
+        📑 Extracted Text
+      </button>
+    `;
+  } else if (ext === 'pdf') {
+    tabsHtml = `
+      <button class="ppt-view-tab ${currentDocMode === 'original' ? 'active' : ''}" data-mode="original" onclick="switchDocViewMode('original')">
+        📄 Original PDF
+      </button>
+      <button class="ppt-view-tab ${currentDocMode === 'google' ? 'active' : ''}" data-mode="google" onclick="switchDocViewMode('google')">
+        🌐 Google Viewer
+      </button>
+      <button class="ppt-view-tab ${currentDocMode === 'outline' ? 'active' : ''}" data-mode="outline" onclick="switchDocViewMode('outline')">
+        📑 Extracted Text
+      </button>
+    `;
+  } else if (ext === 'xlsx' || ext === 'xls') {
+    tabsHtml = `
+      <button class="ppt-view-tab ${currentDocMode === 'original' ? 'active' : ''}" data-mode="original" onclick="switchDocViewMode('original')">
+        📊 Original Spreadsheet
+      </button>
+      <button class="ppt-view-tab ${currentDocMode === 'google' ? 'active' : ''}" data-mode="google" onclick="switchDocViewMode('google')">
+        🌐 Google Sheets Viewer
+      </button>
+    `;
+  } else {
+    tabsHtml = `
+      <button class="ppt-view-tab active" data-mode="original" onclick="switchDocViewMode('original')">
+        🗒️ Original File (${ext.toUpperCase()})
+      </button>
+    `;
   }
 
   container.innerHTML = `
-    <div class="ppt-original-viewer" id="pptAppRoot">
+    <div class="ppt-original-viewer" id="docViewerRoot">
       <div class="ppt-view-nav">
         <div class="ppt-view-tabs">
-          <button class="ppt-view-tab active" data-mode="original" onclick="switchPptViewMode('original')">
-            🖥️ Original Presentation
-          </button>
-          <button class="ppt-view-tab" data-mode="google" onclick="switchPptViewMode('google')">
-            🌐 Google Viewer
-          </button>
-          <button class="ppt-view-tab" data-mode="outline" onclick="switchPptViewMode('outline')">
-            📑 Slide Outline & Content
-          </button>
+          ${tabsHtml}
         </div>
         <div class="ppt-view-actions">
-          <button class="ppt-ctrl-btn" onclick="downloadCurrentFile()" title="Download original PPTX file">
-            📥 Download (.pptx)
+          <button class="ppt-ctrl-btn" onclick="downloadCurrentFile()" title="Download original file">
+            📥 Download Original (${ext.toUpperCase()})
           </button>
-          <button class="ppt-ctrl-btn" onclick="togglePptFullscreen()" title="Fullscreen">
+          <button class="ppt-ctrl-btn" onclick="toggleDocFullscreen()" title="Fullscreen">
             ⛶ Fullscreen
           </button>
         </div>
       </div>
-      <div class="ppt-view-body" id="pptViewBody"></div>
+      <div class="ppt-view-body" id="docViewBody"></div>
     </div>
   `;
 
-  renderPptCurrentMode();
+  renderDocCurrentMode();
 }
 
-function switchPptViewMode(mode) {
-  currentPptMode = mode;
+function switchDocViewMode(mode) {
+  currentDocMode = mode;
   document.querySelectorAll('.ppt-view-tab').forEach(tab => {
     tab.classList.toggle('active', tab.getAttribute('data-mode') === mode);
   });
-  renderPptCurrentMode();
+  renderDocCurrentMode();
 }
 
-function renderPptCurrentMode() {
-  const body = document.getElementById('pptViewBody');
+function renderDocCurrentMode() {
+  const body = document.getElementById('docViewBody');
   if (!body) return;
 
   const f = files[activeIdx];
   if (!f) return;
 
+  const ext = (f.ext || f.name.split('.').pop()).toLowerCase();
   const rawUrl = `${API_BASE}/raw/${sessionId}/${encodeURIComponent(f.name)}`;
   const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
-  if (currentPptMode === 'original') {
-    const officeUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(rawUrl)}`;
-    body.innerHTML = `
-      ${isLocal ? `
-        <div class="ppt-local-notice">
-          <div>
-            <strong>💡 Localhost Notice:</strong> Microsoft Office Online Viewer requires a public URL. When deployed on Render (<a href="https://document-ai-chatbot-71ey.onrender.com" target="_blank" style="color: inherit; text-decoration: underline;">document-ai-chatbot-71ey.onrender.com</a>), your original presentation renders with 100% fidelity here. In local mode, you can <a href="javascript:downloadCurrentFile()" style="color: inherit; font-weight: bold; text-decoration: underline;">download the original PPTX</a> or switch to the <strong>Slide Outline</strong> tab.
+  // 1. ORIGINAL MODE
+  if (currentDocMode === 'original') {
+    if (ext === 'pdf') {
+      const pdfUrl = f.url || rawUrl;
+      body.innerHTML = `<iframe class="ppt-view-iframe" src="${pdfUrl}" allowfullscreen="true" title="${f.name}"></iframe>`;
+    } else if (ext === 'pptx' || ext === 'ppt' || ext === 'docx' || ext === 'doc' || ext === 'xlsx' || ext === 'xls') {
+      const officeUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(rawUrl)}`;
+      body.innerHTML = `
+        ${isLocal ? `
+          <div class="ppt-local-notice">
+            <div>
+              <strong>💡 Localhost Notice:</strong> Microsoft Office Online Viewer requires a public URL. When deployed on Render (<a href="https://document-ai-chatbot-71ey.onrender.com" target="_blank" style="color: inherit; text-decoration: underline;">document-ai-chatbot-71ey.onrender.com</a>), your original ${ext.toUpperCase()} file renders with 100% fidelity here. In local mode, you can <a href="javascript:downloadCurrentFile()" style="color: inherit; font-weight: bold; text-decoration: underline;">download the original file</a> or view the <strong>Outline</strong> tab.
+            </div>
           </div>
-        </div>
-      ` : ''}
-      <iframe class="ppt-view-iframe" src="${officeUrl}" allowfullscreen="true" title="Original PowerPoint Presentation"></iframe>
-    `;
-  } else if (currentPptMode === 'google') {
+        ` : ''}
+        <iframe class="ppt-view-iframe" src="${officeUrl}" allowfullscreen="true" title="Original ${ext.toUpperCase()} File"></iframe>
+      `;
+    } else {
+      renderOriginalTextView(body, f);
+    }
+  }
+  // 2. GOOGLE VIEWER MODE
+  else if (currentDocMode === 'google') {
     const gviewUrl = `https://docs.google.com/gview?url=${encodeURIComponent(rawUrl)}&embedded=true`;
     body.innerHTML = `
       ${isLocal ? `
@@ -1595,94 +1656,136 @@ function renderPptCurrentMode() {
           </div>
         </div>
       ` : ''}
-      <iframe class="ppt-view-iframe" src="${gviewUrl}" allowfullscreen="true" title="Google Docs Presentation Viewer"></iframe>
+      <iframe class="ppt-view-iframe" src="${gviewUrl}" allowfullscreen="true" title="Google Viewer"></iframe>
     `;
-  } else if (currentPptMode === 'outline') {
-    // Show the slide outline & content
-    const thumbsHtml = (currentPptSlides || []).map((s, i) => `
-      <div class="ppt-thumb-item${i === currentPptIndex ? ' active' : ''}" onclick="renderPptSlide(${i})">
-        <span class="ppt-thumb-num">Slide ${s.slide_number}</span>
-        <span class="ppt-thumb-title">${s.title || `Slide ${s.slide_number}`}</span>
-      </div>
-    `).join('');
-
-    const selectOptionsHtml = (currentPptSlides || []).map((s, i) => `
-      <option value="${i}">Slide ${s.slide_number} of ${currentPptSlides.length}</option>
-    `).join('');
-
-    body.innerHTML = `
-      <div class="ppt-app" id="pptOutlineRoot">
-        <div class="ppt-sidebar" id="pptSidebar">
-          <div class="ppt-sidebar-head">
-            <span>Slides (${currentPptSlides.length})</span>
-            <button class="clear-btn" onclick="togglePptSidebar()" title="Collapse outline">✕</button>
-          </div>
-          <div class="ppt-thumbs-list">
-            ${thumbsHtml}
-          </div>
-        </div>
-        <div class="ppt-main">
-          <div class="ppt-canvas-area">
-            <div class="ppt-slide">
-              <div class="ppt-slide-header">
-                <div class="ppt-slide-title" id="pptSlideTitle"></div>
-                <div class="ppt-slide-badge" id="pptSlideBadge"></div>
-              </div>
-              <div class="ppt-slide-body" id="pptSlideBody"></div>
-            </div>
-          </div>
-          <div class="ppt-controls-bar">
-            <div class="ppt-ctrl-group">
-              <button class="ppt-ctrl-btn" onclick="togglePptSidebar()" title="Toggle Slides Outline">☰ Slides</button>
-              <button class="ppt-ctrl-btn" id="pptFirstBtn" onclick="renderPptSlide(0)" title="First slide">|◀</button>
-              <button class="ppt-ctrl-btn" id="pptPrevBtn" onclick="prevPptSlide()" title="Previous slide (Left Arrow)">◀</button>
-            </div>
-            <div class="ppt-ctrl-group">
-              <select class="ppt-select" id="pptSlideSelect" onchange="renderPptSlide(parseInt(this.value, 10))">
-                ${selectOptionsHtml}
-              </select>
-            </div>
-            <div class="ppt-ctrl-group">
-              <button class="ppt-ctrl-btn" id="pptNextBtn" onclick="nextPptSlide()" title="Next slide (Right Arrow / Space)">▶</button>
-              <button class="ppt-ctrl-btn" id="pptLastBtn" onclick="renderPptSlide(currentPptSlides.length - 1)" title="Last slide">▶|</button>
-              <button class="ppt-ctrl-btn" onclick="toggleSlideTheme()" title="Toggle Classic White / Dark Canvas">🎨 Theme</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-    renderPptSlide(currentPptIndex);
+  }
+  // 3. OUTLINE / EXTRACTED TEXT MODE
+  else if (currentDocMode === 'outline') {
+    if (ext === 'pptx' || ext === 'ppt') {
+      renderPptOutlineMode(body);
+    } else {
+      renderDocxOutlineMode(body, f);
+    }
   }
 }
 
-async function loadDocxViewer(filename, cachedText) {
-  const container = document.getElementById('docxViewerMount');
-  if (!container) return;
+function renderPptOutlineMode(body) {
+  const thumbsHtml = (currentPptSlides || []).map((s, i) => `
+    <div class="ppt-thumb-item${i === currentPptIndex ? ' active' : ''}" onclick="renderPptSlide(${i})">
+      <span class="ppt-thumb-num">Slide ${s.slide_number}</span>
+      <span class="ppt-thumb-title">${s.title || `Slide ${s.slide_number}`}</span>
+    </div>
+  `).join('');
 
-  try {
-    let text = cachedText;
-    if (!text) {
-      const res = await fetch(`${API_BASE}/document/${sessionId}/${encodeURIComponent(filename)}`);
-      if (!res.ok) throw new Error('Document endpoint returned ' + res.status);
-      const data = await res.json();
-      text = data.text || '';
-      if (activeIdx !== null && files[activeIdx]) {
-        files[activeIdx].text = text;
+  const selectOptionsHtml = (currentPptSlides || []).map((s, i) => `
+    <option value="${i}">Slide ${s.slide_number} of ${currentPptSlides.length}</option>
+  `).join('');
+
+  body.innerHTML = `
+    <div class="ppt-app" id="pptOutlineRoot">
+      <div class="ppt-sidebar" id="pptSidebar">
+        <div class="ppt-sidebar-head">
+          <span>Slides (${currentPptSlides.length})</span>
+          <button class="clear-btn" onclick="togglePptSidebar()" title="Collapse outline">✕</button>
+        </div>
+        <div class="ppt-thumbs-list">
+          ${thumbsHtml}
+        </div>
+      </div>
+      <div class="ppt-main">
+        <div class="ppt-canvas-area">
+          <div class="ppt-slide">
+            <div class="ppt-slide-header">
+              <div class="ppt-slide-title" id="pptSlideTitle"></div>
+              <div class="ppt-slide-badge" id="pptSlideBadge"></div>
+            </div>
+            <div class="ppt-slide-body" id="pptSlideBody"></div>
+          </div>
+        </div>
+        <div class="ppt-controls-bar">
+          <div class="ppt-ctrl-group">
+            <button class="ppt-ctrl-btn" onclick="togglePptSidebar()" title="Toggle Slides Outline">☰ Slides</button>
+            <button class="ppt-ctrl-btn" id="pptFirstBtn" onclick="renderPptSlide(0)" title="First slide">|◀</button>
+            <button class="ppt-ctrl-btn" id="pptPrevBtn" onclick="prevPptSlide()" title="Previous slide (Left Arrow)">◀</button>
+          </div>
+          <div class="ppt-ctrl-group">
+            <select class="ppt-select" id="pptSlideSelect" onchange="renderPptSlide(parseInt(this.value, 10))">
+              ${selectOptionsHtml}
+            </select>
+          </div>
+          <div class="ppt-ctrl-group">
+            <button class="ppt-ctrl-btn" id="pptNextBtn" onclick="nextPptSlide()" title="Next slide (Right Arrow / Space)">▶</button>
+            <button class="ppt-ctrl-btn" id="pptLastBtn" onclick="renderPptSlide(currentPptSlides.length - 1)" title="Last slide">▶|</button>
+            <button class="ppt-ctrl-btn" onclick="toggleSlideTheme()" title="Toggle Classic White / Dark Canvas">🎨 Theme</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  renderPptSlide(currentPptIndex);
+}
+
+function renderDocxOutlineMode(body, f) {
+  let text = f.text || '';
+  if (!text) {
+    body.innerHTML = `<div class="viewer-empty"><p>Loading extracted text…</p></div>`;
+    fetch(`${API_BASE}/document/${sessionId}/${encodeURIComponent(f.name)}`)
+      .then(r => r.json())
+      .then(d => {
+        f.text = d.text || '';
         saveLocalState();
-      }
-    }
+        renderDocxOutlineMode(body, f);
+      })
+      .catch(err => {
+        body.innerHTML = `<div class="viewer-empty"><p>Could not extract text (${err.message})</p></div>`;
+      });
+    return;
+  }
 
-    container.innerHTML = `
-      <div class="docx-container">
-        <div class="docx-paper">${text || '(Empty document)'}</div>
-      </div>
-    `;
-  } catch (err) {
-    container.innerHTML = `
-      <div class="viewer-empty">
-        <p>Could not load document preview (${err.message})</p>
-      </div>
-    `;
+  body.innerHTML = `
+    <div class="docx-container">
+      <div class="docx-paper">${text || '(Empty document)'}</div>
+    </div>
+  `;
+}
+
+function renderOriginalTextView(body, f) {
+  body.innerHTML = `<div id="txtViewer" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; white-space: pre-wrap; font-family: monospace; background: var(--surface2); padding: 24px; overflow-y: auto; color: var(--text); line-height: 1.6;">Loading text…</div>`;
+  if (f.rawFile) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const el = document.getElementById('txtViewer');
+      if (el) el.textContent = e.target.result;
+    };
+    reader.readAsText(f.rawFile);
+  } else if (f.text) {
+    setTimeout(() => {
+      const el = document.getElementById('txtViewer');
+      if (el) el.textContent = f.text;
+    }, 30);
+  } else {
+    fetch(`${API_BASE}/raw/${sessionId}/${encodeURIComponent(f.name)}`)
+      .then(r => r.text())
+      .then(t => {
+        f.text = t;
+        saveLocalState();
+        const el = document.getElementById('txtViewer');
+        if (el) el.textContent = t;
+      })
+      .catch(() => {
+        const el = document.getElementById('txtViewer');
+        if (el) el.textContent = 'Could not load text file content.';
+      });
+  }
+}
+
+function toggleDocFullscreen() {
+  const elem = document.getElementById('docViewerRoot');
+  if (!elem) return;
+  if (!document.fullscreenElement) {
+    elem.requestFullscreen().catch(() => {});
+  } else {
+    document.exitFullscreen().catch(() => {});
   }
 }
 
@@ -1693,55 +1796,6 @@ function selectFile(i) {
   const f = files[i];
   if (!f) return;
   document.getElementById('contentTitle').textContent = f.name;
-  
-  let viewerHtml = '';
-  const fileRawUrl = `${API_BASE}/raw/${sessionId}/${encodeURIComponent(f.name)}`;
-  
-  if (f.ext === 'pdf') {
-    const pdfUrl = f.url || fileRawUrl;
-    viewerHtml = `<iframe src="${pdfUrl}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border:none; border-radius: 8px;"></iframe>`;
-  } else if (f.ext === 'txt') {
-    viewerHtml = `<div id="txtViewer" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; white-space: pre-wrap; font-family: monospace; background: var(--surface2); padding: 20px; border-radius: var(--radius); overflow-y: auto;">Loading text...</div>`;
-    if (f.rawFile) {
-      const reader = new FileReader();
-      reader.onload = e => {
-        const el = document.getElementById('txtViewer');
-        if (el) el.textContent = e.target.result;
-      };
-      reader.readAsText(f.rawFile);
-    } else if (f.text) {
-      setTimeout(() => {
-        const el = document.getElementById('txtViewer');
-        if (el) el.textContent = f.text;
-      }, 50);
-    } else {
-      fetch(`${API_BASE}/document/${sessionId}/${encodeURIComponent(f.name)}`)
-        .then(r => r.json())
-        .then(d => {
-          f.text = d.text || '';
-          saveLocalState();
-          const el = document.getElementById('txtViewer');
-          if (el) el.textContent = f.text;
-        })
-        .catch(() => {});
-    }
-  } else if (f.ext === 'pptx' || f.ext === 'ppt') {
-    viewerHtml = `<div id="pptViewerMount" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></div>`;
-  } else if (f.ext === 'docx') {
-    viewerHtml = `<div id="docxViewerMount" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></div>`;
-  } else {
-    const icon = EXT_ICONS[f.ext] || '📄';
-    viewerHtml = `
-      <div class="file-preview-card">
-        <div class="fp-header">
-          <div class="fp-icon">${icon}</div>
-          <div>
-            <div class="fp-title">${f.name}</div>
-            <div class="fp-meta">${fmtSize(f.size)} · ${f.ext.toUpperCase()} · Indexed in session</div>
-          </div>
-        </div>
-      </div>`;
-  }
 
   document.getElementById('viewer').innerHTML = `
     <div style="position: absolute; top: 20px; left: 20px; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 10px;">
@@ -1749,7 +1803,7 @@ function selectFile(i) {
         <button class="btn btn-primary" onclick="summarizeFile('${f.name}')" id="btnSummarize">✨ Summarize File</button>
       </div>
       <div id="viewerContent" style="flex: 1; position: relative; overflow: hidden;">
-        ${viewerHtml}
+        <div id="docViewerMount" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></div>
       </div>
       <div id="summaryOverlay" style="display: none; flex-direction: column; flex: 1; background: var(--surface); overflow-y: auto;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-shrink: 0;">
@@ -1764,11 +1818,7 @@ function selectFile(i) {
     </div>
   `;
 
-  if (f.ext === 'pptx' || f.ext === 'ppt') {
-    loadPptxViewer(f.name, f.slides);
-  } else if (f.ext === 'docx') {
-    loadDocxViewer(f.name, f.text);
-  }
+  loadUniversalDocumentViewer(f);
 }
 
 function removeFile(e, i) {
