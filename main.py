@@ -25,12 +25,10 @@ from pydantic import BaseModel
 # ── LangChain imports ───────────────────────────────────────────────────────
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import FastEmbedEmbeddings
-from langchain_community.document_loaders import (
-    PyPDFLoader,
-    UnstructuredWordDocumentLoader,
-    UnstructuredPowerPointLoader,
-    TextLoader,
-)
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_core.documents import Document
+import docx
+from pptx import Presentation
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_community.vectorstores import SupabaseVectorStore
@@ -114,17 +112,49 @@ def get_llm() -> ChatGoogleGenerativeAI:
     )
 
 
-def load_file(path: str, ext: str):
-    loaders = {
-        ".pdf":  PyPDFLoader,
-        ".docx": UnstructuredWordDocumentLoader,
-        ".pptx": UnstructuredPowerPointLoader,
-        ".txt":  TextLoader,
-    }
-    loader_cls = loaders.get(ext)
-    if not loader_cls:
+def load_docx(path: str) -> list[Document]:
+    doc = docx.Document(path)
+    text_parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+            if row_text:
+                text_parts.append(row_text)
+    return [Document(page_content="\n\n".join(text_parts), metadata={"source": path})]
+
+
+def load_pptx(path: str) -> list[Document]:
+    prs = Presentation(path)
+    docs = []
+    for slide_idx, slide in enumerate(prs.slides):
+        slide_texts = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for paragraph in shape.text_frame.paragraphs:
+                    text = paragraph.text.strip()
+                    if text:
+                        slide_texts.append(text)
+        if slide_texts:
+            docs.append(
+                Document(
+                    page_content="\n".join(slide_texts),
+                    metadata={"slide": slide_idx + 1, "source": path},
+                )
+            )
+    return docs
+
+
+def load_file(path: str, ext: str) -> list[Document]:
+    if ext == ".pdf":
+        return PyPDFLoader(path).load()
+    elif ext == ".docx":
+        return load_docx(path)
+    elif ext == ".pptx":
+        return load_pptx(path)
+    elif ext == ".txt":
+        return TextLoader(path).load()
+    else:
         raise ValueError(f"Unsupported file type: {ext}")
-    return loader_cls(path).load()
 
 
 def format_docs(docs):

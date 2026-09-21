@@ -7,9 +7,7 @@ langchain-chroma
 langchain-google-genai
 fastembed
 pypdf
-unstructured
 python-docx
 python-pptx
 chromadb
 supabase
-
