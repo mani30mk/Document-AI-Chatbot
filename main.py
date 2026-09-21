@@ -65,6 +65,10 @@ def serve_index():
 
 
 # ── Global state & Cloud storage setup ─────────────────────────────────────
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploaded_docs")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+SESSIONS_FILE = os.path.join(UPLOAD_DIR, "sessions.json")
+
 # In-memory session fallbacks
 session_vectorstores: dict[str, Chroma] = {}
 session_histories: dict[str, list] = {}
@@ -72,6 +76,46 @@ session_files: dict[str, list[str]] = {}
 session_docs: dict[str, dict[str, str]] = {}
 session_slides: dict[str, dict[str, list]] = {}
 session_api_keys: dict[str, str] = {}
+
+
+def load_sessions_from_disk():
+    global session_histories, session_files, session_docs, session_slides
+    if os.path.exists(SESSIONS_FILE):
+        try:
+            with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                session_files.update(data.get("files", {}))
+                session_docs.update(data.get("docs", {}))
+                session_slides.update(data.get("slides", {}))
+                for sid, msgs in data.get("histories", {}).items():
+                    session_histories[sid] = [
+                        HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"])
+                        for m in msgs
+                    ]
+            print(f"Loaded {len(session_files)} sessions from disk.")
+        except Exception as e:
+            print(f"Notice: Could not load sessions from disk ({e})")
+
+
+def save_sessions_to_disk():
+    try:
+        data = {
+            "files": session_files,
+            "docs": session_docs,
+            "slides": session_slides,
+            "histories": {
+                sid: [
+                    {"role": "user" if isinstance(m, HumanMessage) else "bot", "content": m.content}
+                    for m in msgs
+                ]
+                for sid, msgs in session_histories.items()
+            }
+        }
+        with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"Notice: Could not save sessions to disk ({e})")
+
 
 # Supabase (persistent cloud storage & pgvector)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -377,7 +421,7 @@ def new_session():
 @app.get("/session/{session_id}")
 def get_session_state(session_id: str):
     """Retrieve full session state (files, slides, docs, chat history) for page reload."""
-    if session_id not in session_histories:
+    if session_id not in session_histories and session_id not in session_files:
         raise HTTPException(status_code=404, detail="Session not found.")
     
     history_list = []
@@ -391,6 +435,7 @@ def get_session_state(session_id: str):
         "slides": session_slides.get(session_id, {}),
         "docs": session_docs.get(session_id, {}),
         "history": history_list,
+        "history_turns": len(history_list) // 2,
     }
 
 
@@ -400,6 +445,8 @@ import threading
 @app.on_event("startup")
 def startup_prewarm():
     """Pre-warm FastEmbed in background so first upload does not stall."""
+    load_sessions_from_disk()
+
     def _prewarm():
         try:
             get_embeddings()
@@ -407,6 +454,43 @@ def startup_prewarm():
         except Exception as err:
             print(f"Notice: FastEmbed pre-warm ({err})")
     threading.Thread(target=_prewarm, daemon=True).start()
+
+
+@app.get("/raw/{session_id}/{filename}")
+def get_raw_file(session_id: str, filename: str):
+    """Serve original uploaded file directly for Office Viewer or download."""
+    file_path = os.path.join(UPLOAD_DIR, session_id, filename)
+    if os.path.isfile(file_path):
+        media_type = None
+        lower_name = filename.lower()
+        if lower_name.endswith((".pptx", ".ppt")):
+            media_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        elif lower_name.endswith(".pdf"):
+            media_type = "application/pdf"
+        elif lower_name.endswith(".docx"):
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        elif lower_name.endswith(".txt"):
+            media_type = "text/plain; charset=utf-8"
+        return FileResponse(
+            file_path,
+            filename=filename,
+            media_type=media_type,
+            content_disposition_type="inline",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+
+    if supabase_client:
+        try:
+            from fastapi.responses import RedirectResponse
+            pub_url = supabase_client.storage.from_("documents").get_public_url(f"{session_id}/{filename}")
+            if pub_url:
+                return RedirectResponse(pub_url)
+        except Exception:
+            pass
+    raise HTTPException(status_code=404, detail="File not found.")
 
 
 @app.post("/upload/{session_id}")
@@ -419,22 +503,25 @@ async def upload_files(
     Supports PDF, DOCX, PPTX, TXT.
     """
     if session_id not in session_histories:
-        raise HTTPException(status_code=404, detail="Session not found. Call /session/new first.")
+        session_histories[session_id] = []
+        session_files[session_id] = []
+        session_docs[session_id] = {}
 
     all_docs = []
     uploaded_names = []
+    session_dir = os.path.join(UPLOAD_DIR, session_id)
+    os.makedirs(session_dir, exist_ok=True)
 
     for uf in files:
         ext = os.path.splitext(uf.filename)[1].lower()
         file_bytes = await uf.read()
 
-        # Write to a temp file so loaders can read it
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
+        saved_path = os.path.join(session_dir, uf.filename)
+        with open(saved_path, "wb") as f:
+            f.write(file_bytes)
 
         try:
-            docs, slides_info = load_file(tmp_path, ext)
+            docs, slides_info = load_file(saved_path, ext)
             all_docs.extend(docs)
             uploaded_names.append(uf.filename)
             if slides_info:
@@ -456,11 +543,6 @@ async def upload_files(
                     print(f"Supabase storage upload note: {s_err}")
         except Exception as e:
             return {"error": f"Failed to parse {uf.filename}: {str(e)}", "skipped": uf.filename}
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
 
     if not all_docs:
         raise HTTPException(
@@ -504,6 +586,7 @@ async def upload_files(
             session_vectorstores[session_id] = Chroma.from_documents(chunks, embeddings)
 
     session_files[session_id].extend(uploaded_names)
+    save_sessions_to_disk()
 
     return {
         "message": f"Uploaded {len(uploaded_names)} file(s), indexed {len(chunks)} chunks.",
@@ -623,6 +706,8 @@ async def ask(req: AskRequest):
     if len(session_histories[sid]) > 20:
         session_histories[sid] = session_histories[sid][-20:]
 
+    save_sessions_to_disk()
+
     yt_results = []
     try:
         yt_results = search_youtube(req.question, max_results=3)
@@ -671,20 +756,8 @@ def clear_history(session_id: str):
     if session_id not in session_histories:
         raise HTTPException(status_code=404, detail="Session not found.")
     session_histories[session_id] = []
+    save_sessions_to_disk()
     return {"message": "Conversation history cleared."}
-
-
-@app.get("/session/{session_id}")
-def session_info(session_id: str):
-    """Get session info — files uploaded and history length."""
-    if session_id not in session_histories:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    return {
-        "session_id": session_id,
-        "files": session_files.get(session_id, []),
-        "history_turns": len(session_histories[session_id]) // 2,
-        "has_vectorstore": session_id in session_vectorstores,
-    }
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])

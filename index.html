@@ -464,6 +464,97 @@
     max-width: 150px;
   }
 
+  /* ── Original PPTX Presentation Viewer ─────────────────── */
+  .ppt-original-viewer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .ppt-view-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 14px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .ppt-view-tabs {
+    display: flex;
+    gap: 6px;
+  }
+  .ppt-view-tab {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .ppt-view-tab:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .ppt-view-tab.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .ppt-view-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ppt-view-body {
+    flex: 1;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #111;
+  }
+  .ppt-view-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+    background: #fff;
+  }
+  .ppt-local-notice {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    background: #fffbeb;
+    color: #92400e;
+    border: 1px solid #fef3c7;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+    z-index: 10;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+  }
+
   /* ── DOCX Viewer ──────────────────────────────────────── */
   .docx-container {
     position: absolute;
@@ -855,12 +946,86 @@ const API_BASE = (window.location.origin && window.location.origin.startsWith('h
 let sessionId = null;
 let chatOpen = false;
 let turnCount = 0;
-let files = [];   // { name, size, ext }
+let files = [];   // { name, size, ext, slides, text, url, rawFile }
 let activeIdx = null;
 let isSending = false;
+let chatHistory = []; // [ { role, content, youtube_sources, sources_used, timestamp } ]
+let currentPptMode = 'original'; // 'original' | 'google' | 'outline'
+let currentPptFilename = '';
 
-// ── Session init & Persistence ────────────────────────────
+// ── LocalStorage Persistence ──────────────────────────────
+function saveLocalState() {
+  try {
+    if (sessionId) localStorage.setItem('study_rag_session_id', sessionId);
+    localStorage.setItem('study_rag_chat_history', JSON.stringify(chatHistory));
+
+    const storableFiles = files.map(f => ({
+      name: f.name,
+      size: f.size || 0,
+      ext: f.ext,
+      slides: f.slides || null,
+      text: f.text || null,
+    }));
+    localStorage.setItem('study_rag_files', JSON.stringify(storableFiles));
+
+    if (activeIdx !== null && activeIdx >= 0) {
+      localStorage.setItem('study_rag_active_idx', activeIdx.toString());
+    } else {
+      localStorage.removeItem('study_rag_active_idx');
+    }
+  } catch (e) {
+    console.warn('Could not save to localStorage:', e);
+  }
+}
+
+function loadLocalState() {
+  try {
+    const savedSid = localStorage.getItem('study_rag_session_id');
+    if (savedSid) sessionId = savedSid;
+
+    const savedFiles = localStorage.getItem('study_rag_files');
+    if (savedFiles) {
+      const parsed = JSON.parse(savedFiles);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        files = parsed.map(f => ({
+          name: f.name,
+          size: f.size || 0,
+          ext: f.ext || f.name.split('.').pop().toLowerCase(),
+          slides: f.slides || null,
+          text: f.text || null,
+          url: null,
+          rawFile: null,
+        }));
+        renderFileList();
+        document.getElementById('fileCountTag').textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
+      }
+    }
+
+    const savedHistory = localStorage.getItem('study_rag_chat_history');
+    if (savedHistory) {
+      const parsedHist = JSON.parse(savedHistory);
+      if (Array.isArray(parsedHist) && parsedHist.length > 0) {
+        chatHistory = parsedHist;
+        renderChatHistory();
+      }
+    }
+
+    const savedIdx = localStorage.getItem('study_rag_active_idx');
+    if (savedIdx !== null && files.length > 0) {
+      const idx = parseInt(savedIdx, 10);
+      if (!isNaN(idx) && idx >= 0 && idx < files.length) {
+        selectFile(idx);
+      }
+    }
+  } catch (e) {
+    console.warn('Could not load from localStorage:', e);
+  }
+}
+
 async function initSession() {
+  // 1. Immediately restore from local storage (0-ms delay, no blank screen)
+  loadLocalState();
+
   const savedSid = localStorage.getItem('study_rag_session_id');
   if (savedSid) {
     try {
@@ -870,47 +1035,68 @@ async function initSession() {
         sessionId = data.session_id;
         setStatus(true);
 
-        // Restore files
-        files = (data.files || []).map(name => ({
-          name,
-          size: 0,
-          ext: name.split('.').pop().toLowerCase(),
-          slides: (data.slides && data.slides[name]) ? data.slides[name] : null,
-          text: (data.docs && data.docs[name]) ? data.docs[name] : null,
-        }));
-        renderFileList();
-        document.getElementById('fileCountTag').textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
-
-        // Restore chat messages
-        if (data.history && data.history.length > 0) {
-          const msgsContainer = document.getElementById('chatMessages');
-          msgsContainer.innerHTML = '';
-          turnCount = 0;
-          data.history.forEach(turn => {
-            addBubble(turn.content, turn.role);
-            if (turn.role === 'user') turnCount++;
+        // Merge files if backend has files not yet in client
+        if (data.files && data.files.length > 0) {
+          let updated = false;
+          data.files.forEach(fname => {
+            const existing = files.find(f => f.name === fname);
+            if (!existing) {
+              files.push({
+                name: fname,
+                size: 0,
+                ext: fname.split('.').pop().toLowerCase(),
+                slides: (data.slides && data.slides[fname]) ? data.slides[fname] : null,
+                text: (data.docs && data.docs[fname]) ? data.docs[fname] : null,
+                url: null,
+                rawFile: null,
+              });
+              updated = true;
+            } else {
+              if (!existing.slides && data.slides && data.slides[fname]) {
+                existing.slides = data.slides[fname];
+                updated = true;
+              }
+              if (!existing.text && data.docs && data.docs[fname]) {
+                existing.text = data.docs[fname];
+                updated = true;
+              }
+            }
           });
-          document.getElementById('historyBadge').textContent = turnCount + ' turn' + (turnCount !== 1 ? 's' : '');
+          if (updated) {
+            renderFileList();
+            saveLocalState();
+            if (activeIdx === null && files.length > 0) selectFile(0);
+          }
         }
 
-        // Auto select first file if available
-        if (files.length > 0) {
-          selectFile(0);
+        // Restore chat if client had no local chat
+        if ((!chatHistory || chatHistory.length === 0) && data.history && data.history.length > 0) {
+          chatHistory = data.history.map(item => ({
+            role: item.role,
+            content: item.content,
+            sources_used: 0,
+            youtube_sources: [],
+            timestamp: Date.now(),
+          }));
+          renderChatHistory();
+          saveLocalState();
         }
+
         return;
       }
     } catch (e) {
-      console.warn('Could not restore previous session:', e);
+      console.warn('Backend sync notice:', e);
+      setStatus(false);
     }
   }
 
-  // Create brand new session
+  // Create brand new session if none exists
   try {
     const res = await fetch(`${API_BASE}/session/new`, { method: 'POST' });
     if (!res.ok) throw new Error();
     const data = await res.json();
     sessionId = data.session_id;
-    localStorage.setItem('study_rag_session_id', sessionId);
+    saveLocalState();
     setStatus(true);
   } catch {
     setStatus(false);
@@ -923,7 +1109,11 @@ async function startNewSession() {
     if (!confirm('Start a new study session? This will clear current session files and chat history.')) return;
   }
   localStorage.removeItem('study_rag_session_id');
+  localStorage.removeItem('study_rag_files');
+  localStorage.removeItem('study_rag_chat_history');
+  localStorage.removeItem('study_rag_active_idx');
   files = [];
+  chatHistory = [];
   activeIdx = null;
   currentPptSlides = [];
   renderFileList();
@@ -1088,6 +1278,7 @@ async function uploadFiles(fileList) {
         text: (data.docs && data.docs[f.name]) ? data.docs[f.name] : null,
       }));
       renderFileList();
+      saveLocalState();
       showToast(`✓ ${fileList.length} file(s) indexed (${data.chunks} chunks)`);
       document.getElementById('chatSubtitle').textContent = `${files.length} file(s) loaded`;
       document.getElementById('fileCountTag').textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
@@ -1314,41 +1505,113 @@ async function loadPptxViewer(filename, cachedSlides) {
   const container = document.getElementById('pptViewerMount');
   if (!container) return;
 
-  try {
-    let slides = cachedSlides;
-    if (!slides || !slides.length) {
-      const res = await fetch(`${API_BASE}/slides/${sessionId}/${encodeURIComponent(filename)}`);
-      if (!res.ok) throw new Error('Slides endpoint returned ' + res.status);
-      const data = await res.json();
-      slides = data.slides || [];
-      if (activeIdx !== null && files[activeIdx]) {
-        files[activeIdx].slides = slides;
-      }
-    }
+  currentPptFilename = filename;
 
-    currentPptSlides = slides || [];
-    currentPptIndex = 0;
+  // Pre-load slides in background for outline mode
+  if (cachedSlides && cachedSlides.length) {
+    currentPptSlides = cachedSlides;
+  } else {
+    fetch(`${API_BASE}/slides/${sessionId}/${encodeURIComponent(filename)}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.slides) {
+          currentPptSlides = d.slides;
+          if (activeIdx !== null && files[activeIdx]) {
+            files[activeIdx].slides = d.slides;
+            saveLocalState();
+          }
+        }
+      })
+      .catch(() => {});
+  }
 
-    if (!currentPptSlides.length) {
-      container.innerHTML = `<div class="viewer-empty"><p>No slides found in this presentation.</p></div>`;
-      return;
-    }
+  container.innerHTML = `
+    <div class="ppt-original-viewer" id="pptAppRoot">
+      <div class="ppt-view-nav">
+        <div class="ppt-view-tabs">
+          <button class="ppt-view-tab active" data-mode="original" onclick="switchPptViewMode('original')">
+            🖥️ Original Presentation
+          </button>
+          <button class="ppt-view-tab" data-mode="google" onclick="switchPptViewMode('google')">
+            🌐 Google Viewer
+          </button>
+          <button class="ppt-view-tab" data-mode="outline" onclick="switchPptViewMode('outline')">
+            📑 Slide Outline & Content
+          </button>
+        </div>
+        <div class="ppt-view-actions">
+          <button class="ppt-ctrl-btn" onclick="downloadCurrentFile()" title="Download original PPTX file">
+            📥 Download (.pptx)
+          </button>
+          <button class="ppt-ctrl-btn" onclick="togglePptFullscreen()" title="Fullscreen">
+            ⛶ Fullscreen
+          </button>
+        </div>
+      </div>
+      <div class="ppt-view-body" id="pptViewBody"></div>
+    </div>
+  `;
 
-    // Build sidebar thumbnails and select options
-    const thumbsHtml = currentPptSlides.map((s, i) => `
-      <div class="ppt-thumb-item${i === 0 ? ' active' : ''}" onclick="renderPptSlide(${i})">
+  renderPptCurrentMode();
+}
+
+function switchPptViewMode(mode) {
+  currentPptMode = mode;
+  document.querySelectorAll('.ppt-view-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.getAttribute('data-mode') === mode);
+  });
+  renderPptCurrentMode();
+}
+
+function renderPptCurrentMode() {
+  const body = document.getElementById('pptViewBody');
+  if (!body) return;
+
+  const f = files[activeIdx];
+  if (!f) return;
+
+  const rawUrl = `${API_BASE}/raw/${sessionId}/${encodeURIComponent(f.name)}`;
+  const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+  if (currentPptMode === 'original') {
+    const officeUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(rawUrl)}`;
+    body.innerHTML = `
+      ${isLocal ? `
+        <div class="ppt-local-notice">
+          <div>
+            <strong>💡 Localhost Notice:</strong> Microsoft Office Online Viewer requires a public URL. When deployed on Render (<a href="https://document-ai-chatbot-71ey.onrender.com" target="_blank" style="color: inherit; text-decoration: underline;">document-ai-chatbot-71ey.onrender.com</a>), your original presentation renders with 100% fidelity here. In local mode, you can <a href="javascript:downloadCurrentFile()" style="color: inherit; font-weight: bold; text-decoration: underline;">download the original PPTX</a> or switch to the <strong>Slide Outline</strong> tab.
+          </div>
+        </div>
+      ` : ''}
+      <iframe class="ppt-view-iframe" src="${officeUrl}" allowfullscreen="true" title="Original PowerPoint Presentation"></iframe>
+    `;
+  } else if (currentPptMode === 'google') {
+    const gviewUrl = `https://docs.google.com/gview?url=${encodeURIComponent(rawUrl)}&embedded=true`;
+    body.innerHTML = `
+      ${isLocal ? `
+        <div class="ppt-local-notice">
+          <div>
+            <strong>💡 Localhost Notice:</strong> Google Viewer requires a public domain. When deployed, it embeds directly.
+          </div>
+        </div>
+      ` : ''}
+      <iframe class="ppt-view-iframe" src="${gviewUrl}" allowfullscreen="true" title="Google Docs Presentation Viewer"></iframe>
+    `;
+  } else if (currentPptMode === 'outline') {
+    // Show the slide outline & content
+    const thumbsHtml = (currentPptSlides || []).map((s, i) => `
+      <div class="ppt-thumb-item${i === currentPptIndex ? ' active' : ''}" onclick="renderPptSlide(${i})">
         <span class="ppt-thumb-num">Slide ${s.slide_number}</span>
         <span class="ppt-thumb-title">${s.title || `Slide ${s.slide_number}`}</span>
       </div>
     `).join('');
 
-    const selectOptionsHtml = currentPptSlides.map((s, i) => `
+    const selectOptionsHtml = (currentPptSlides || []).map((s, i) => `
       <option value="${i}">Slide ${s.slide_number} of ${currentPptSlides.length}</option>
     `).join('');
 
-    container.innerHTML = `
-      <div class="ppt-app" id="pptAppRoot">
-        <!-- Slide Thumbnails Sidebar -->
+    body.innerHTML = `
+      <div class="ppt-app" id="pptOutlineRoot">
         <div class="ppt-sidebar" id="pptSidebar">
           <div class="ppt-sidebar-head">
             <span>Slides (${currentPptSlides.length})</span>
@@ -1358,8 +1621,6 @@ async function loadPptxViewer(filename, cachedSlides) {
             ${thumbsHtml}
           </div>
         </div>
-
-        <!-- Main Slide Presentation Area -->
         <div class="ppt-main">
           <div class="ppt-canvas-area">
             <div class="ppt-slide">
@@ -1370,40 +1631,27 @@ async function loadPptxViewer(filename, cachedSlides) {
               <div class="ppt-slide-body" id="pptSlideBody"></div>
             </div>
           </div>
-
-          <!-- Controls Bar -->
           <div class="ppt-controls-bar">
             <div class="ppt-ctrl-group">
               <button class="ppt-ctrl-btn" onclick="togglePptSidebar()" title="Toggle Slides Outline">☰ Slides</button>
               <button class="ppt-ctrl-btn" id="pptFirstBtn" onclick="renderPptSlide(0)" title="First slide">|◀</button>
               <button class="ppt-ctrl-btn" id="pptPrevBtn" onclick="prevPptSlide()" title="Previous slide (Left Arrow)">◀</button>
             </div>
-
             <div class="ppt-ctrl-group">
               <select class="ppt-select" id="pptSlideSelect" onchange="renderPptSlide(parseInt(this.value, 10))">
                 ${selectOptionsHtml}
               </select>
             </div>
-
             <div class="ppt-ctrl-group">
               <button class="ppt-ctrl-btn" id="pptNextBtn" onclick="nextPptSlide()" title="Next slide (Right Arrow / Space)">▶</button>
               <button class="ppt-ctrl-btn" id="pptLastBtn" onclick="renderPptSlide(currentPptSlides.length - 1)" title="Last slide">▶|</button>
               <button class="ppt-ctrl-btn" onclick="toggleSlideTheme()" title="Toggle Classic White / Dark Canvas">🎨 Theme</button>
-              <button class="ppt-ctrl-btn" onclick="downloadCurrentFile()" title="Download Original Presentation (.pptx)">📥 Download</button>
-              <button class="ppt-ctrl-btn" onclick="togglePptFullscreen()" title="Fullscreen (F)">⛶</button>
             </div>
           </div>
         </div>
       </div>
     `;
-
-    renderPptSlide(0);
-  } catch (err) {
-    container.innerHTML = `
-      <div class="viewer-empty">
-        <p>Could not load slide preview (${err.message})</p>
-      </div>
-    `;
+    renderPptSlide(currentPptIndex);
   }
 }
 
@@ -1420,6 +1668,7 @@ async function loadDocxViewer(filename, cachedText) {
       text = data.text || '';
       if (activeIdx !== null && files[activeIdx]) {
         files[activeIdx].text = text;
+        saveLocalState();
       }
     }
 
@@ -1439,22 +1688,43 @@ async function loadDocxViewer(filename, cachedText) {
 
 function selectFile(i) {
   activeIdx = i;
+  saveLocalState();
   renderFileList();
   const f = files[i];
+  if (!f) return;
   document.getElementById('contentTitle').textContent = f.name;
   
   let viewerHtml = '';
+  const fileRawUrl = `${API_BASE}/raw/${sessionId}/${encodeURIComponent(f.name)}`;
   
   if (f.ext === 'pdf') {
-    viewerHtml = `<iframe src="${f.url}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border:none; border-radius: 8px;"></iframe>`;
+    const pdfUrl = f.url || fileRawUrl;
+    viewerHtml = `<iframe src="${pdfUrl}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border:none; border-radius: 8px;"></iframe>`;
   } else if (f.ext === 'txt') {
     viewerHtml = `<div id="txtViewer" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; white-space: pre-wrap; font-family: monospace; background: var(--surface2); padding: 20px; border-radius: var(--radius); overflow-y: auto;">Loading text...</div>`;
-    const reader = new FileReader();
-    reader.onload = e => {
-      const el = document.getElementById('txtViewer');
-      if (el) el.textContent = e.target.result;
-    };
-    reader.readAsText(f.rawFile);
+    if (f.rawFile) {
+      const reader = new FileReader();
+      reader.onload = e => {
+        const el = document.getElementById('txtViewer');
+        if (el) el.textContent = e.target.result;
+      };
+      reader.readAsText(f.rawFile);
+    } else if (f.text) {
+      setTimeout(() => {
+        const el = document.getElementById('txtViewer');
+        if (el) el.textContent = f.text;
+      }, 50);
+    } else {
+      fetch(`${API_BASE}/document/${sessionId}/${encodeURIComponent(f.name)}`)
+        .then(r => r.json())
+        .then(d => {
+          f.text = d.text || '';
+          saveLocalState();
+          const el = document.getElementById('txtViewer');
+          if (el) el.textContent = f.text;
+        })
+        .catch(() => {});
+    }
   } else if (f.ext === 'pptx' || f.ext === 'ppt') {
     viewerHtml = `<div id="pptViewerMount" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></div>`;
   } else if (f.ext === 'docx') {
@@ -1503,7 +1773,7 @@ function selectFile(i) {
 
 function removeFile(e, i) {
   e.stopPropagation();
-  URL.revokeObjectURL(files[i].url);
+  if (files[i] && files[i].url) URL.revokeObjectURL(files[i].url);
   files.splice(i, 1);
   if (activeIdx === i) {
     activeIdx = null;
@@ -1512,6 +1782,7 @@ function removeFile(e, i) {
   } else if (activeIdx > i) activeIdx--;
   document.getElementById('fileCountTag').textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
   renderFileList();
+  saveLocalState();
   showToast('File removed from view (still in vector store for this session)');
 }
 
@@ -1544,6 +1815,11 @@ async function sendMessage() {
 
   input.value = '';
   addBubble(q, 'user');
+  
+  // Save user turn to local chat history
+  chatHistory.push({ role: 'user', content: q, timestamp: Date.now() });
+  saveLocalState();
+
   const typingBubble = addBubble('Thinking…', 'bot typing');
   isSending = true;
   document.getElementById('sendBtn').disabled = true;
@@ -1602,6 +1878,16 @@ async function sendMessage() {
       typingBubble.after(src);
       turnCount++;
       document.getElementById('historyBadge').textContent = turnCount + ' turn' + (turnCount !== 1 ? 's' : '');
+
+      // Save bot turn to local chat history
+      chatHistory.push({
+        role: 'bot',
+        content: data.answer,
+        sources_used: data.sources_used,
+        youtube_sources: data.youtube_sources || [],
+        timestamp: Date.now(),
+      });
+      saveLocalState();
     }
   } catch {
     typingBubble.textContent = 'Connection error — is the backend running?';
@@ -1617,13 +1903,78 @@ async function clearHistory() {
   if (!sessionId) return;
   try {
     await fetch(`${API_BASE}/session/${sessionId}/history`, { method: 'DELETE' });
-    document.getElementById('chatMessages').innerHTML = '<div class="bubble bot">Conversation cleared. Ask a new question!</div>';
-    turnCount = 0;
+  } catch {}
+  chatHistory = [];
+  saveLocalState();
+  document.getElementById('chatMessages').innerHTML = '<div class="bubble bot">Conversation cleared. Ask a new question!</div>';
+  turnCount = 0;
+  document.getElementById('historyBadge').textContent = '0 turns';
+  showToast('Conversation history cleared');
+}
+
+function renderChatHistory() {
+  const msgs = document.getElementById('chatMessages');
+  if (!msgs) return;
+  msgs.innerHTML = '';
+  turnCount = 0;
+
+  if (!chatHistory || chatHistory.length === 0) {
+    msgs.innerHTML = '<div class="bubble bot">Hi! Upload your study files on the left, then ask me anything about them.</div>';
     document.getElementById('historyBadge').textContent = '0 turns';
-    showToast('Conversation history cleared');
-  } catch {
-    showToast('Could not clear history');
+    return;
   }
+
+  chatHistory.forEach(item => {
+    const d = document.createElement('div');
+    d.className = 'bubble ' + item.role;
+    d.textContent = item.content;
+    msgs.appendChild(d);
+
+    if (item.role === 'user') {
+      turnCount++;
+    } else if (item.role === 'bot') {
+      if (item.youtube_sources && item.youtube_sources.length > 0) {
+        const ytBox = document.createElement('div');
+        ytBox.className = 'yt-sources-box';
+        ytBox.innerHTML = `
+          <div class="yt-sources-title">🎥 Recommended Video Tutorials:</div>
+          <div class="yt-cards-container">
+            ${item.youtube_sources.map(v => {
+              const safeTitle = (v.title || '').replace(/'/g, "\\'");
+              return `
+                <div class="yt-card">
+                  <div class="yt-thumb-wrap" onclick="openVideoModal('${v.id}', '${safeTitle}')" title="Play tutorial">
+                    <img src="${v.thumbnail}" class="yt-thumb" alt="${v.title}" />
+                    ${v.duration ? `<span class="yt-duration">${v.duration}</span>` : ''}
+                    <div class="yt-play-overlay">▶</div>
+                  </div>
+                  <div class="yt-card-body">
+                    <div class="yt-card-title" title="${v.title}">${v.title}</div>
+                    <div class="yt-card-channel">${v.channel}</div>
+                    <div class="yt-card-actions">
+                      <button class="yt-watch-btn" onclick="openVideoModal('${v.id}', '${safeTitle}')">▶ Watch Here</button>
+                      <a href="${v.url}" target="_blank" rel="noopener noreferrer" class="yt-link-btn" title="Open in YouTube">↗ YouTube</a>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `;
+        d.appendChild(ytBox);
+      }
+
+      if (item.sources_used) {
+        const src = document.createElement('div');
+        src.className = 'sources-tag';
+        src.textContent = `↳ ${item.sources_used} chunk(s) retrieved`;
+        msgs.appendChild(src);
+      }
+    }
+  });
+
+  document.getElementById('historyBadge').textContent = turnCount + ' turn' + (turnCount !== 1 ? 's' : '');
+  scrollChat();
 }
 
 function addBubble(text, type) {
