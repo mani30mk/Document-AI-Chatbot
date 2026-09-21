@@ -53,7 +53,7 @@ app.add_middleware(
 )
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def serve_index():
     """Serve the frontend single page app."""
     return FileResponse("index.html")
@@ -417,6 +417,6 @@ def session_info(session_id: str):
     }
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok"}
