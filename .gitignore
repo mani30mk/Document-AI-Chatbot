@@ -22,3 +22,10 @@ __pycache__/
 
 # Vector Stores (if any created locally)
 chroma_db/
+
+# LaTeX build files
+*.aux
+*.log
+*.out
+*.toc
+

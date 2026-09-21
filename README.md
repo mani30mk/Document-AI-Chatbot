@@ -11,7 +11,7 @@ A full-stack Retrieval-Augmented Generation (RAG) application that allows you to
 ## Tech Stack 🛠️
 - **Backend**: Python, FastAPI, LangChain
 - **Vector Database**: ChromaDB
-- **LLMs & Embeddings**: Google Gemini (`gemini-2.5-flash`), HuggingFace (`all-MiniLM-L6-v2`)
+- **LLMs & Embeddings**: Google Gemini (`gemini-2.5-flash`), Google Gemini Embeddings (`models/text-embedding-004`)
 - **Frontend**: Vanilla HTML, CSS (Custom Design System), JavaScript
 
 ## How to Run Locally 🚀
@@ -39,4 +39,26 @@ A full-stack Retrieval-Augmented Generation (RAG) application that allows you to
    ```
 
 5. **Open the App:**
-   Simply double-click on `index.html` to open it in your browser. Enter your **Gemini API Key** in the top navigation bar, click "Connect", and start uploading your study files!
+   Visit `http://localhost:8000` in your browser (or double-click `index.html`). Enter your **Gemini API Key** in the top navigation bar, click "Connect", and start uploading your study files!
+
+---
+
+## Deploy to Render 🌐
+
+This project includes a ready-to-use [`render.yaml`](render.yaml) blueprint configured for Render's **Free Tier**.
+
+### Option 1: One-Click Blueprint
+1. Push your repository to GitHub.
+2. In the [Render Dashboard](https://dashboard.render.com), click **New +** -> **Blueprint**.
+3. Connect your repository — Render will automatically read `render.yaml` and configure the Web Service.
+
+### Option 2: Manual Web Service
+1. In the [Render Dashboard](https://dashboard.render.com), click **New +** -> **Web Service**.
+2. Connect your GitHub repository.
+3. Configure the settings:
+   - **Environment**: `Python 3`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+   - **Instance Type**: `Free`
+4. Click **Deploy Web Service**.
+5. Once deployed, visit your Render URL (e.g. `https://your-app.onrender.com`). Both the frontend and backend are served from this single service!

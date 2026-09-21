@@ -17,12 +17,13 @@ import os
 import uuid
 from typing import List
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # ── LangChain imports ───────────────────────────────────────────────────────
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.document_loaders import (
     PyPDFLoader,
     UnstructuredWordDocumentLoader,
@@ -30,7 +31,6 @@ from langchain_community.document_loaders import (
     TextLoader,
 )
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough
@@ -49,17 +49,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.get("/")
+def serve_index():
+    """Serve the frontend single page app."""
+    return FileResponse("index.html")
+
+
 # ── Global state (per-session stores + chat histories) ──────────────────────
 # In production, swap these dicts for Redis / a proper session store.
 session_vectorstores: dict[str, Chroma] = {}
 session_histories: dict[str, list] = {}
 session_files: dict[str, list[str]] = {}
 session_docs: dict[str, dict[str, str]] = {}
+session_api_keys: dict[str, str] = {}
 
 # ── Shared components ────────────────────────────────────────────────────────
-EMBEDDINGS = None
-EMBEDDINGS_ERROR = None
-
 TEXT_SPLITTER = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
 
 RAG_PROMPT = ChatPromptTemplate.from_messages([
@@ -101,24 +106,21 @@ def format_docs(docs):
     return "\n\n".join(d.page_content for d in docs)
 
 
-def get_embeddings():
-    global EMBEDDINGS, EMBEDDINGS_ERROR
-
-    if EMBEDDINGS is not None:
-        return EMBEDDINGS
-
-    if EMBEDDINGS_ERROR is not None:
-        raise EMBEDDINGS_ERROR
-
-    try:
-        EMBEDDINGS = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        return EMBEDDINGS
-    except Exception as exc:
-        EMBEDDINGS_ERROR = exc
-        raise
+def get_embeddings(api_key: str | None = None) -> GoogleGenerativeAIEmbeddings:
+    key = api_key or os.getenv("GEMINI_API_KEY")
+    if not key:
+        raise ValueError("Google Gemini API key is required for embeddings. Provide it in the request or set GEMINI_API_KEY.")
+    return GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004",
+        google_api_key=key,
+    )
 
 
 # ── Request / Response models ────────────────────────────────────────────────
+class NewSessionRequest(BaseModel):
+    gemini_api_key: str | None = None
+
+
 class AskRequest(BaseModel):
     session_id: str
     question: str
@@ -145,23 +147,33 @@ class SessionResponse(BaseModel):
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.post("/session/new", response_model=SessionResponse)
-def new_session():
+def new_session(req: NewSessionRequest | None = None):
     """Create a new chat/upload session."""
     sid = str(uuid.uuid4())
     session_histories[sid] = []
     session_files[sid] = []
     session_docs[sid] = {}
+    if req and req.gemini_api_key:
+        session_api_keys[sid] = req.gemini_api_key
     return SessionResponse(session_id=sid, files=[])
 
 
 @app.post("/upload/{session_id}")
-async def upload_files(session_id: str, files: List[UploadFile] = File(...)):
+async def upload_files(
+    session_id: str,
+    files: List[UploadFile] = File(...),
+    gemini_api_key: str | None = Form(None),
+):
     """
     Upload one or more study files into the session's vector store.
     Supports PDF, DOCX, PPTX, TXT.
     """
     if session_id not in session_histories:
         raise HTTPException(status_code=404, detail="Session not found. Call /session/new first.")
+
+    api_key = gemini_api_key or session_api_keys.get(session_id) or os.getenv("GEMINI_API_KEY")
+    if api_key:
+        session_api_keys[session_id] = api_key
 
     all_docs = []
     uploaded_names = []
@@ -192,7 +204,7 @@ async def upload_files(session_id: str, files: List[UploadFile] = File(...)):
     chunks = TEXT_SPLITTER.split_documents(all_docs)
 
     try:
-        embeddings = get_embeddings()
+        embeddings = get_embeddings(api_key)
     except Exception as exc:
         raise HTTPException(
             status_code=503,

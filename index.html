@@ -207,7 +207,9 @@
 
 <script>
 // ── Config ────────────────────────────────────────────────
-const API_BASE = 'http://localhost:8000';  // change if deploying remotely
+const API_BASE = (window.location.origin && window.location.origin.startsWith('http'))
+  ? window.location.origin
+  : 'http://localhost:8000';
 
 // ── State ─────────────────────────────────────────────────
 let sessionId = null;
@@ -225,7 +227,11 @@ async function initSession() {
   apiKey = key;
 
   try {
-    const res = await fetch(`${API_BASE}/session/new`, { method: 'POST' });
+    const res = await fetch(`${API_BASE}/session/new`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gemini_api_key: apiKey }),
+    });
     if (!res.ok) throw new Error();
     const data = await res.json();
     sessionId = data.session_id;
@@ -233,7 +239,7 @@ async function initSession() {
     showToast('Connected! Now upload your study files.');
   } catch {
     setStatus(false);
-    showToast('Cannot reach backend. Is uvicorn running on :8000?');
+    showToast('Cannot reach backend. Is the server running?');
   }
 }
 
@@ -268,6 +274,9 @@ async function uploadFiles(fileList) {
   document.getElementById('uploadingIndicator').style.display = 'block';
   const form = new FormData();
   fileList.forEach(f => form.append('files', f));
+  if (apiKey) {
+    form.append('gemini_api_key', apiKey);
+  }
 
   try {
     const res = await fetch(`${API_BASE}/upload/${sessionId}`, { method: 'POST', body: form });
