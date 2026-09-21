@@ -78,6 +78,49 @@
   .del-btn { font-size: 16px; color: var(--muted); opacity: 0; background: none; border: none; cursor: pointer; line-height: 1; padding: 0 2px; }
   .file-card:hover .del-btn { opacity: 1; }
   .uploading-indicator { font-size: 11px; color: var(--accent); padding: 4px 10px; }
+  .upload-progress-card {
+    margin: 0 12px 10px;
+    padding: 10px 12px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 11px;
+  }
+  .progress-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 500;
+  }
+  .progress-status {
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 170px;
+  }
+  .progress-percent {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .progress-bar-bg {
+    width: 100%;
+    height: 6px;
+    background: rgba(0,0,0,0.08);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+    transition: width 0.2s ease;
+  }
+  .progress-bar-fill.done { background: var(--success); }
+  .progress-bar-fill.error { background: var(--danger); }
 
   /* ── Main content ─────────────────────────────────────── */
   .main { display: flex; flex-direction: column; overflow: hidden; }
@@ -154,7 +197,15 @@
       </svg>
       <p>Drop files or click to upload<br/><span style="font-size:10px">PDF · DOCX · PPTX · TXT</span></p>
     </label>
-    <div id="uploadingIndicator" class="uploading-indicator" style="display:none">⏳ Uploading…</div>
+    <div id="uploadProgressContainer" class="upload-progress-card" style="display:none">
+      <div class="progress-info">
+        <span id="progressStatus" class="progress-status">Uploading…</span>
+        <span id="progressPercent" class="progress-percent">0%</span>
+      </div>
+      <div class="progress-bar-bg">
+        <div id="progressBar" class="progress-bar-fill" style="width: 0%"></div>
+      </div>
+    </div>
     <div class="file-list" id="fileList">
       <div class="empty-state">No files yet.<br/>Upload study material above.</div>
     </div>
@@ -258,37 +309,106 @@ zone.addEventListener('drop', async e => {
   await uploadFiles(Array.from(e.dataTransfer.files));
 });
 
+function updateProgress(percent, text, state) {
+  const container = document.getElementById('uploadProgressContainer');
+  const bar = document.getElementById('progressBar');
+  const status = document.getElementById('progressStatus');
+  const pct = document.getElementById('progressPercent');
+
+  container.style.display = 'flex';
+  bar.style.width = Math.min(100, Math.max(0, percent)) + '%';
+  bar.className = 'progress-bar-fill' + (state ? ' ' + state : '');
+  status.textContent = text;
+  pct.textContent = Math.round(percent) + '%';
+}
+
+function hideProgress(delay = 2500) {
+  setTimeout(() => {
+    const container = document.getElementById('uploadProgressContainer');
+    container.style.display = 'none';
+  }, delay);
+}
+
 async function uploadFiles(fileList) {
-  if (!sessionId) {
-    await initSession();
-    if (!sessionId) { showToast('Connecting to server… please try again.'); return; }
-  }
   if (!fileList.length) return;
 
-  document.getElementById('uploadingIndicator').style.display = 'block';
+  if (!sessionId) {
+    updateProgress(10, 'Connecting to server…', '');
+    await initSession();
+    if (!sessionId) {
+      updateProgress(100, 'Cannot connect to server', 'error');
+      showToast('Backend connection failed. Is the server running?');
+      hideProgress(4000);
+      return;
+    }
+  }
+
   const form = new FormData();
   fileList.forEach(f => form.append('files', f));
 
-  try {
-    const res = await fetch(`${API_BASE}/upload/${sessionId}`, { method: 'POST', body: form });
-    const data = await res.json();
-    if (data.error) { showToast('Error: ' + data.error); return; }
-    fileList.forEach(f => files.push({ 
-      name: f.name, 
-      size: f.size, 
-      ext: f.name.split('.').pop().toLowerCase(), 
-      url: URL.createObjectURL(f), 
-      rawFile: f 
-    }));
-    renderFileList();
-    showToast(`✓ ${fileList.length} file(s) indexed (${data.chunks} chunks)`);
-    document.getElementById('chatSubtitle').textContent = `${files.length} file(s) loaded`;
-    document.getElementById('fileCountTag').textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
-  } catch {
-    showToast('Upload failed — is the backend running?');
-  } finally {
-    document.getElementById('uploadingIndicator').style.display = 'none';
-  }
+  updateProgress(5, `Uploading ${fileList.length} file(s)…`, '');
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', `${API_BASE}/upload/${sessionId}`);
+
+  // 1. Client-to-server upload progress (0% - 65%)
+  xhr.upload.onprogress = function (e) {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 65);
+      updateProgress(pct, `Uploading ${fileList.length} file(s) (${pct}%)…`, '');
+    }
+  };
+
+  // 2. Upload complete, server is parsing text and indexing vectors (70% - 90%)
+  xhr.upload.onload = function () {
+    updateProgress(75, 'Extracting text & indexing vectors…', '');
+  };
+
+  // 3. Response received
+  xhr.onload = function () {
+    let data;
+    try {
+      data = JSON.parse(xhr.responseText);
+    } catch {
+      data = {};
+    }
+
+    if (xhr.status >= 200 && xhr.status < 300) {
+      if (data.error) {
+        updateProgress(100, data.error, 'error');
+        showToast('Upload error: ' + data.error);
+        hideProgress(5000);
+        return;
+      }
+
+      updateProgress(100, `✓ Indexed ${data.chunks || 0} chunks!`, 'done');
+      fileList.forEach(f => files.push({ 
+        name: f.name, 
+        size: f.size, 
+        ext: f.name.split('.').pop().toLowerCase(), 
+        url: URL.createObjectURL(f), 
+        rawFile: f 
+      }));
+      renderFileList();
+      showToast(`✓ ${fileList.length} file(s) indexed (${data.chunks} chunks)`);
+      document.getElementById('chatSubtitle').textContent = `${files.length} file(s) loaded`;
+      document.getElementById('fileCountTag').textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
+      hideProgress(2500);
+    } else {
+      const errorDetail = data.detail || data.error || `Server error (${xhr.status})`;
+      updateProgress(100, errorDetail, 'error');
+      showToast(`Upload failed: ${errorDetail}`);
+      hideProgress(5000);
+    }
+  };
+
+  xhr.onerror = function () {
+    updateProgress(100, 'Network connection error', 'error');
+    showToast('Network error — cannot reach server');
+    hideProgress(4000);
+  };
+
+  xhr.send(form);
 }
 
 function renderFileList() {

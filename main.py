@@ -183,6 +183,21 @@ def new_session():
     return SessionResponse(session_id=sid, files=[])
 
 
+import threading
+
+
+@app.on_event("startup")
+def startup_prewarm():
+    """Pre-warm FastEmbed in background so first upload does not stall."""
+    def _prewarm():
+        try:
+            get_embeddings()
+            print("FastEmbed model pre-warmed successfully.")
+        except Exception as err:
+            print(f"Notice: FastEmbed pre-warm ({err})")
+    threading.Thread(target=_prewarm, daemon=True).start()
+
+
 @app.post("/upload/{session_id}")
 async def upload_files(
     session_id: str,
@@ -226,13 +241,19 @@ async def upload_files(
                     )
                 except Exception as s_err:
                     print(f"Supabase storage upload note: {s_err}")
-        except ValueError as e:
-            return {"error": str(e), "skipped": uf.filename}
+        except Exception as e:
+            return {"error": f"Failed to parse {uf.filename}: {str(e)}", "skipped": uf.filename}
         finally:
-            os.unlink(tmp_path)
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
     if not all_docs:
-        raise HTTPException(status_code=400, detail="No documents could be loaded.")
+        raise HTTPException(
+            status_code=400,
+            detail="No readable text could be extracted from the uploaded document(s). Please verify the file contains readable text.",
+        )
 
     chunks = TEXT_SPLITTER.split_documents(all_docs)
     for c in chunks:
