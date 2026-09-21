@@ -214,6 +214,7 @@ def get_llm(model_name: str | None = None) -> ChatGoogleGenerativeAI:
         model=model_name,
         google_api_key=key,
         temperature=0.2,
+        request_timeout=20,
     )
 
 
@@ -729,7 +730,7 @@ async def ask(req: AskRequest):
     if not context and sid in session_docs:
         context = "\n\n".join(list(session_docs[sid].values()))[:4000]
 
-    models_to_try = get_available_models()
+    models_to_try = get_available_models()[:2]
     answer = None
     last_error = None
 
@@ -886,7 +887,7 @@ async def summarize(req: SummarizeRequest):
         "You are an expert summarizer. Please provide a comprehensive and concise summary of the following document:\n\n{text}"
     )
 
-    models_to_try = get_available_models()
+    models_to_try = get_available_models()[:2]
     summary = None
     last_error = None
 

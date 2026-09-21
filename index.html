@@ -2252,12 +2252,17 @@ async function sendMessage() {
   isSending = true;
   document.getElementById('sendBtn').disabled = true;
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
+
   try {
     const res = await fetch(`${API_BASE}/ask`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, question: q }),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
     const data = await res.json();
 
     if (!res.ok) {
@@ -2317,8 +2322,13 @@ async function sendMessage() {
       });
       saveLocalState();
     }
-  } catch {
-    typingBubble.textContent = 'Connection error — is the backend running?';
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err && err.name === 'AbortError') {
+      typingBubble.textContent = '⏱️ The request timed out (server took longer than 45s). The server may be waking up or busy. Please try asking again in a few moments.';
+    } else {
+      typingBubble.textContent = 'Connection error — is the backend running? (' + (err ? err.message : '') + ')';
+    }
     typingBubble.className = 'bubble error';
   } finally {
     isSending = false;
