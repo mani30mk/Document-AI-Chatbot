@@ -106,7 +106,7 @@ Context:
 ])
 
 
-def get_llm() -> ChatGoogleGenerativeAI:
+def get_llm(model_name: str = "gemini-1.5-flash") -> ChatGoogleGenerativeAI:
     key = os.getenv("GEMINI_API_KEY")
     if not key:
         raise ValueError(
@@ -114,7 +114,7 @@ def get_llm() -> ChatGoogleGenerativeAI:
             "Please configure GEMINI_API_KEY in Render or in your .env file."
         )
     return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model=model_name,
         google_api_key=key,
         temperature=0.2,
     )
@@ -176,7 +176,10 @@ def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
                             if not title and len(text) < 80:
                                 title = text
                             elif text != title:
-                                bullets.append(text)
+                                bullets.append({
+                                    "text": text,
+                                    "level": getattr(paragraph, "level", 0),
+                                })
 
                 elif shape.has_table:
                     table_rows = []
@@ -323,7 +326,7 @@ def search_youtube(query: str, max_results: int = 3) -> list[dict]:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
             },
         )
-        with urllib.request.urlopen(req, timeout=4) as response:
+        with urllib.request.urlopen(req, timeout=2.0) as response:
             html = response.read().decode("utf-8")
             match = re.search(r"var ytInitialData = ({.*?});</script>", html)
             if not match:
@@ -575,16 +578,42 @@ async def ask(req: AskRequest):
     # Build the chain with history
     history = session_histories[sid]
 
-    retrieved_docs = retriever.invoke(req.question)
+    retrieved_docs = []
+    if retriever:
+        try:
+            retrieved_docs = retriever.invoke(req.question)
+        except Exception as r_err:
+            print(f"Primary retriever failed ({r_err}), falling back to in-memory Chroma...")
+            if sid in session_vectorstores:
+                retriever = session_vectorstores[sid].as_retriever(search_kwargs={"k": 4})
+                try:
+                    retrieved_docs = retriever.invoke(req.question)
+                except Exception as c_err:
+                    print(f"Chroma retriever notice: {c_err}")
+
     context = format_docs(retrieved_docs)
+    if not context and sid in session_docs:
+        context = "\n\n".join(list(session_docs[sid].values()))[:4000]
 
-    chain = RAG_PROMPT | llm | StrOutputParser()
-
-    answer = chain.invoke({
-        "context": context,
-        "chat_history": history,
-        "question": req.question,
-    })
+    try:
+        chain = RAG_PROMPT | llm | StrOutputParser()
+        answer = chain.invoke({
+            "context": context,
+            "chat_history": history,
+            "question": req.question,
+        })
+    except Exception as llm_err:
+        print(f"LLM invoke failed ({llm_err}), trying gemini-2.0-flash...")
+        try:
+            fallback_llm = get_llm("gemini-2.0-flash")
+            chain = RAG_PROMPT | fallback_llm | StrOutputParser()
+            answer = chain.invoke({
+                "context": context,
+                "chat_history": history,
+                "question": req.question,
+            })
+        except Exception as f_err:
+            raise HTTPException(status_code=500, detail=f"AI model error: {str(llm_err)}")
 
     # Persist turn to history
     session_histories[sid].append(HumanMessage(content=req.question))
@@ -594,7 +623,11 @@ async def ask(req: AskRequest):
     if len(session_histories[sid]) > 20:
         session_histories[sid] = session_histories[sid][-20:]
 
-    yt_results = search_youtube(req.question, max_results=3)
+    yt_results = []
+    try:
+        yt_results = search_youtube(req.question, max_results=3)
+    except Exception:
+        pass
 
     return AskResponse(
         answer=answer,

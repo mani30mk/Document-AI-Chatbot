@@ -258,6 +258,35 @@
     box-sizing: border-box;
     transition: transform 0.15s ease;
   }
+  .ppt-slide.theme-white {
+    background: #ffffff !important;
+    color: #1e293b !important;
+    border-color: #cbd5e1 !important;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.14) !important;
+  }
+  .ppt-slide.theme-white .ppt-slide-title {
+    color: #0f172a !important;
+  }
+  .ppt-slide.theme-white .ppt-slide-body {
+    color: #334155 !important;
+  }
+  .ppt-slide.theme-white .ppt-table th {
+    background: #f1f5f9 !important;
+    color: #0f172a !important;
+  }
+  .ppt-slide.theme-white .ppt-table td {
+    color: #334155 !important;
+    border-color: #e2e8f0 !important;
+  }
+  .ppt-slide.theme-white .ppt-notes-drawer {
+    background: #f8fafc !important;
+    color: #64748b !important;
+    border-left-color: var(--accent) !important;
+  }
+  .ppt-slide.theme-white .ppt-img-wrapper {
+    background: #ffffff !important;
+    border-color: #e2e8f0 !important;
+  }
   .ppt-slide-header {
     display: flex;
     justify-content: space-between;
@@ -304,16 +333,13 @@
   }
   .ppt-bullet-item {
     position: relative;
-    padding-left: 20px;
+    padding-left: 18px;
+    line-height: 1.6;
   }
-  .ppt-bullet-item::before {
-    content: "•";
+  .ppt-bullet-marker {
     color: var(--accent);
     font-weight: bold;
-    font-size: 18px;
-    position: absolute;
-    left: 4px;
-    top: -2px;
+    margin-right: 8px;
   }
   .ppt-table {
     width: 100%;
@@ -1147,7 +1173,13 @@ function renderPptSlide(idx) {
     if (s.bullets && s.bullets.length > 0) {
       bodyContent += `
         <ul class="ppt-bullet-list">
-          ${s.bullets.map(b => `<li class="ppt-bullet-item">${b}</li>`).join('')}
+          ${s.bullets.map(b => {
+            const text = typeof b === 'string' ? b : (b.text || '');
+            const level = typeof b === 'object' && b.level ? b.level : 0;
+            const indent = level * 20;
+            const bulletMarker = level === 0 ? '•' : (level === 1 ? '◦' : '▪');
+            return `<li class="ppt-bullet-item" style="margin-left: ${indent}px;"><span class="ppt-bullet-marker">${bulletMarker}</span>${text}</li>`;
+          }).join('')}
         </ul>
       `;
     }
@@ -1204,6 +1236,38 @@ function renderPptSlide(idx) {
     }
 
     bodyEl.innerHTML = bodyContent;
+    applySlideTheme();
+  }
+}
+
+let slideTheme = localStorage.getItem('study_rag_slide_theme') || 'white';
+
+function applySlideTheme() {
+  const slide = document.querySelector('.ppt-slide');
+  if (slide) {
+    slide.classList.toggle('theme-white', slideTheme === 'white');
+  }
+}
+
+function toggleSlideTheme() {
+  slideTheme = slideTheme === 'white' ? 'dark' : 'white';
+  localStorage.setItem('study_rag_slide_theme', slideTheme);
+  applySlideTheme();
+  showToast(`Slide theme: ${slideTheme === 'white' ? 'Classic White' : 'Dark Mode'}`);
+}
+
+function downloadCurrentFile() {
+  if (activeIdx === null || !files[activeIdx]) return;
+  const f = files[activeIdx];
+  if (f.url) {
+    const a = document.createElement('a');
+    a.href = f.url;
+    a.download = f.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } else {
+    showToast('Download link not available for this session');
   }
 }
 
@@ -1324,6 +1388,8 @@ async function loadPptxViewer(filename, cachedSlides) {
             <div class="ppt-ctrl-group">
               <button class="ppt-ctrl-btn" id="pptNextBtn" onclick="nextPptSlide()" title="Next slide (Right Arrow / Space)">▶</button>
               <button class="ppt-ctrl-btn" id="pptLastBtn" onclick="renderPptSlide(currentPptSlides.length - 1)" title="Last slide">▶|</button>
+              <button class="ppt-ctrl-btn" onclick="toggleSlideTheme()" title="Toggle Classic White / Dark Canvas">🎨 Theme</button>
+              <button class="ppt-ctrl-btn" onclick="downloadCurrentFile()" title="Download Original Presentation (.pptx)">📥 Download</button>
               <button class="ppt-ctrl-btn" onclick="togglePptFullscreen()" title="Fullscreen (F)">⛶</button>
             </div>
           </div>
