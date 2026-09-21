@@ -150,13 +150,66 @@ Context:
 ])
 
 
-def get_llm(model_name: str = "gemini-1.5-flash") -> ChatGoogleGenerativeAI:
+AVAILABLE_GEMINI_MODELS: list[str] = []
+
+
+def get_available_models() -> list[str]:
+    """Query Google API for active models supporting generateContent for this API key."""
+    global AVAILABLE_GEMINI_MODELS
+    if AVAILABLE_GEMINI_MODELS:
+        return AVAILABLE_GEMINI_MODELS
+
+    key = os.getenv("GEMINI_API_KEY")
+    candidates = [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+    ]
+    if not key:
+        return candidates
+
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        req = urllib.request.Request(url, headers={"User-Agent": "DocumentAI/1.0"})
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            models = data.get("models", [])
+            discovered = []
+            for m in models:
+                methods = m.get("supportedGenerationMethods", [])
+                name = m.get("name", "").replace("models/", "")
+                if "generateContent" in methods and "gemini" in name:
+                    discovered.append(name)
+            
+            # Prioritize flash models
+            flash_models = [m for m in discovered if "flash" in m]
+            other_models = [m for m in discovered if "flash" not in m]
+            sorted_models = flash_models + other_models
+            if sorted_models:
+                AVAILABLE_GEMINI_MODELS = sorted_models
+                print(f"Discovered {len(AVAILABLE_GEMINI_MODELS)} available Gemini models: {AVAILABLE_GEMINI_MODELS[:5]}")
+                return AVAILABLE_GEMINI_MODELS
+    except Exception as e:
+        print(f"Notice: Model discovery via API ({e}), using default candidates.")
+
+    AVAILABLE_GEMINI_MODELS = candidates
+    return AVAILABLE_GEMINI_MODELS
+
+
+def get_llm(model_name: str | None = None) -> ChatGoogleGenerativeAI:
     key = os.getenv("GEMINI_API_KEY")
     if not key:
         raise ValueError(
             "GEMINI_API_KEY environment variable is not set. "
             "Please configure GEMINI_API_KEY in Render or in your .env file."
         )
+    if not model_name:
+        models = get_available_models()
+        model_name = models[0] if models else "gemini-2.5-flash"
+
     return ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=key,
@@ -632,11 +685,6 @@ async def ask(req: AskRequest):
     if sid not in session_histories:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    try:
-        llm = get_llm()
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
     retriever = None
     if supabase_client:
         try:
@@ -680,25 +728,28 @@ async def ask(req: AskRequest):
     if not context and sid in session_docs:
         context = "\n\n".join(list(session_docs[sid].values()))[:4000]
 
-    try:
-        chain = RAG_PROMPT | llm | StrOutputParser()
-        answer = chain.invoke({
-            "context": context,
-            "chat_history": history,
-            "question": req.question,
-        })
-    except Exception as llm_err:
-        print(f"LLM invoke failed ({llm_err}), trying gemini-2.0-flash...")
+    models_to_try = get_available_models()
+    answer = None
+    last_error = None
+
+    for m_name in models_to_try:
         try:
-            fallback_llm = get_llm("gemini-2.0-flash")
-            chain = RAG_PROMPT | fallback_llm | StrOutputParser()
+            curr_llm = get_llm(m_name)
+            chain = RAG_PROMPT | curr_llm | StrOutputParser()
             answer = chain.invoke({
                 "context": context,
                 "chat_history": history,
                 "question": req.question,
             })
-        except Exception as f_err:
-            raise HTTPException(status_code=500, detail=f"AI model error: {str(llm_err)}")
+            if answer:
+                break
+        except Exception as llm_err:
+            print(f"Model {m_name} failed ({llm_err}), trying next candidate...")
+            last_error = llm_err
+            continue
+
+    if not answer:
+        raise HTTPException(status_code=500, detail=f"AI model error: {str(last_error)}")
 
     # Persist turn to history
     session_histories[sid].append(HumanMessage(content=req.question))
@@ -743,13 +794,27 @@ async def summarize(req: SummarizeRequest):
     prompt = ChatPromptTemplate.from_template(
         "You are an expert summarizer. Please provide a comprehensive and concise summary of the following document:\n\n{text}"
     )
-    chain = prompt | llm | StrOutputParser()
-    
-    try:
-        summary = chain.invoke({"text": text})
-        return {"summary": summary}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+    models_to_try = get_available_models()
+    summary = None
+    last_error = None
+
+    for m_name in models_to_try:
+        try:
+            curr_llm = get_llm(m_name)
+            chain = prompt | curr_llm | StrOutputParser()
+            summary = chain.invoke({"text": text})
+            if summary:
+                break
+        except Exception as e:
+            print(f"Summarize model {m_name} failed ({e}), trying next candidate...")
+            last_error = e
+            continue
+
+    if not summary:
+        raise HTTPException(status_code=500, detail=f"AI model error: {str(last_error)}")
+
+    return {"summary": summary}
 
 
 @app.delete("/session/{session_id}/history")
