@@ -132,16 +132,52 @@ def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
         slide_texts = []
         title = ""
         bullets = []
+        tables = []
+
+        # Check title shape first
+        try:
+            if slide.shapes.title and slide.shapes.title.text.strip():
+                title = slide.shapes.title.text.strip()
+                slide_texts.append(title)
+        except Exception:
+            pass
+
         for shape in slide.shapes:
-            if shape.has_text_frame:
-                for paragraph in shape.text_frame.paragraphs:
-                    text = paragraph.text.strip()
-                    if text:
-                        slide_texts.append(text)
-                        if not title and (shape == getattr(slide.shapes, "title", None) or len(text) < 75):
-                            title = text
-                        elif text != title:
-                            bullets.append(text)
+            try:
+                if shape == getattr(slide.shapes, "title", None):
+                    continue
+
+                if shape.has_text_frame:
+                    for paragraph in shape.text_frame.paragraphs:
+                        text = paragraph.text.strip()
+                        if text:
+                            slide_texts.append(text)
+                            if not title and len(text) < 80:
+                                title = text
+                            elif text != title:
+                                bullets.append(text)
+
+                elif shape.has_table:
+                    table_rows = []
+                    for row in shape.table.rows:
+                        row_cells = [cell.text.strip() for cell in row.cells]
+                        if any(row_cells):
+                            table_rows.append(row_cells)
+                            row_text = " | ".join(c for c in row_cells if c)
+                            slide_texts.append(row_text)
+                    if table_rows:
+                        tables.append(table_rows)
+            except Exception:
+                continue
+
+        # Speaker notes
+        notes = ""
+        try:
+            if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+                notes = slide.notes_slide.notes_text_frame.text.strip()
+        except Exception:
+            pass
+
         if not title and bullets:
             title = bullets.pop(0)
         if not title:
@@ -151,16 +187,18 @@ def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
             "slide_number": slide_idx + 1,
             "title": title,
             "bullets": bullets,
+            "tables": tables,
+            "notes": notes,
             "raw_text": "\n".join(slide_texts),
         })
 
-        if slide_texts:
-            docs.append(
-                Document(
-                    page_content="\n".join(slide_texts),
-                    metadata={"slide": slide_idx + 1, "source": path},
-                )
+        content_for_doc = "\n".join(slide_texts) if slide_texts else f"Slide {slide_idx + 1}: {title}"
+        docs.append(
+            Document(
+                page_content=content_for_doc,
+                metadata={"slide": slide_idx + 1, "source": path},
             )
+        )
     return docs, slides_data
 
 
@@ -169,7 +207,7 @@ def load_file(path: str, ext: str) -> tuple[list[Document], list[dict] | None]:
         return PyPDFLoader(path).load(), None
     elif ext == ".docx":
         return load_docx(path), None
-    elif ext == ".pptx":
+    elif ext in (".pptx", ".ppt"):
         return load_pptx(path)
     elif ext == ".txt":
         return TextLoader(path).load(), None
@@ -349,6 +387,7 @@ async def upload_files(
         "files": session_files[session_id],
         "chunks": len(chunks),
         "slides": session_slides.get(session_id, {}),
+        "docs": session_docs.get(session_id, {}),
         "storage": "supabase" if stored_in_supabase else "in-memory",
     }
 

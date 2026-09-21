@@ -144,39 +144,118 @@
   .pipeline-step .step-val { font-weight: 600; font-size: 12px; }
 
   /* ── PPT Viewer ───────────────────────────────────────── */
-  .ppt-container {
+  .ppt-app {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    border-radius: var(--radius);
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+  .ppt-sidebar {
+    width: 220px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    flex-shrink: 0;
+    transition: width 0.2s ease;
+  }
+  .ppt-sidebar.collapsed {
+    width: 0;
+    border-right: none;
+    overflow: hidden;
+  }
+  .ppt-sidebar-head {
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .ppt-thumbs-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ppt-thumb-item {
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    cursor: pointer;
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    transition: all 0.15s ease;
+    user-select: none;
+  }
+  .ppt-thumb-item:hover {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+  }
+  .ppt-thumb-item.active {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .ppt-thumb-num {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .ppt-thumb-title {
+    font-weight: 500;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ppt-main {
+    flex: 1;
     display: flex;
     flex-direction: column;
     height: 100%;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px;
-    gap: 12px;
-    user-select: none;
+    min-width: 0;
+    background: var(--bg);
   }
-  .ppt-slide-wrapper {
+  .ppt-canvas-area {
     flex: 1;
-    width: 100%;
-    max-width: 820px;
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 16px;
+    overflow-y: auto;
     min-height: 0;
   }
   .ppt-slide {
     width: 100%;
+    max-width: 820px;
     aspect-ratio: 16 / 9;
     max-height: 100%;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 12px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
-    padding: 28px 36px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.08);
+    padding: 26px 32px;
     display: flex;
     flex-direction: column;
-    justify-content: flex-start;
-    overflow-y: auto;
     position: relative;
+    overflow-y: auto;
+    box-sizing: border-box;
     transition: transform 0.15s ease;
   }
   .ppt-slide-header {
@@ -184,14 +263,17 @@
     justify-content: space-between;
     align-items: flex-start;
     border-bottom: 2px solid var(--accent);
-    padding-bottom: 12px;
-    margin-bottom: 18px;
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+    gap: 12px;
+    flex-shrink: 0;
   }
   .ppt-slide-title {
-    font-size: 20px;
+    font-size: 18px;
     font-weight: 700;
     color: var(--text);
     line-height: 1.3;
+    flex: 1;
   }
   .ppt-slide-badge {
     font-size: 11px;
@@ -207,13 +289,18 @@
     font-size: 14px;
     line-height: 1.7;
     color: var(--text);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
   }
   .ppt-bullet-list {
     list-style: none;
     padding-left: 0;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
+    margin: 0;
   }
   .ppt-bullet-item {
     position: relative;
@@ -228,30 +315,65 @@
     left: 4px;
     top: -2px;
   }
-  .ppt-controls {
+  .ppt-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 8px;
+    font-size: 13px;
+  }
+  .ppt-table th, .ppt-table td {
+    border: 1px solid var(--border);
+    padding: 7px 10px;
+    text-align: left;
+  }
+  .ppt-table th {
+    background: var(--surface2);
+    font-weight: 600;
+  }
+  .ppt-notes-drawer {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: var(--surface2);
+    border-radius: 6px;
+    border-left: 3px solid var(--accent);
+    font-size: 12px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .ppt-notes-title {
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 2px;
+  }
+  .ppt-controls-bar {
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 14px;
+    justify-content: space-between;
+    padding: 8px 16px;
     background: var(--surface);
-    padding: 8px 18px;
-    border-radius: 30px;
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow);
+    border-top: 1px solid var(--border);
+    gap: 8px;
+    flex-shrink: 0;
+    user-select: none;
+  }
+  .ppt-ctrl-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
   .ppt-ctrl-btn {
     background: var(--surface2);
     border: 1px solid var(--border);
-    border-radius: 20px;
-    padding: 5px 14px;
+    border-radius: 6px;
+    padding: 5px 10px;
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
     color: var(--text);
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 4px;
-    transition: background .15s;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
   }
   .ppt-ctrl-btn:hover:not(:disabled) {
     background: var(--accent);
@@ -259,15 +381,20 @@
     border-color: var(--accent);
   }
   .ppt-ctrl-btn:disabled {
-    opacity: 0.4;
+    opacity: 0.35;
     cursor: not-allowed;
   }
-  .ppt-counter {
+  .ppt-select {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
     font-size: 12px;
-    font-weight: 600;
-    color: var(--muted);
-    min-width: 80px;
-    text-align: center;
+    font-weight: 500;
+    padding: 4px 8px;
+    border-radius: 6px;
+    outline: none;
+    cursor: pointer;
+    max-width: 150px;
   }
 
   /* ── DOCX Viewer ──────────────────────────────────────── */
@@ -538,18 +665,26 @@ async function uploadFiles(fileList) {
       }
 
       updateProgress(100, `✓ Indexed ${data.chunks || 0} chunks!`, 'done');
+      const startIdx = files.length;
       fileList.forEach(f => files.push({ 
         name: f.name, 
         size: f.size, 
         ext: f.name.split('.').pop().toLowerCase(), 
         url: URL.createObjectURL(f), 
-        rawFile: f 
+        rawFile: f,
+        slides: (data.slides && data.slides[f.name]) ? data.slides[f.name] : null,
+        text: (data.docs && data.docs[f.name]) ? data.docs[f.name] : null,
       }));
       renderFileList();
       showToast(`✓ ${fileList.length} file(s) indexed (${data.chunks} chunks)`);
       document.getElementById('chatSubtitle').textContent = `${files.length} file(s) loaded`;
       document.getElementById('fileCountTag').textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
       hideProgress(2500);
+
+      // Auto-display the newly uploaded file immediately
+      if (files.length > 0) {
+        selectFile(startIdx);
+      }
     } else {
       const errorDetail = data.detail || data.error || `Server error (${xhr.status})`;
       updateProgress(100, errorDetail, 'error');
@@ -596,28 +731,79 @@ function renderPptSlide(idx) {
   const titleEl = document.getElementById('pptSlideTitle');
   const badgeEl = document.getElementById('pptSlideBadge');
   const bodyEl = document.getElementById('pptSlideBody');
-  const counterEl = document.getElementById('pptCounter');
+  const selectEl = document.getElementById('pptSlideSelect');
+  const firstBtn = document.getElementById('pptFirstBtn');
   const prevBtn = document.getElementById('pptPrevBtn');
   const nextBtn = document.getElementById('pptNextBtn');
+  const lastBtn = document.getElementById('pptLastBtn');
 
   if (titleEl) titleEl.textContent = s.title || `Slide ${s.slide_number}`;
   if (badgeEl) badgeEl.textContent = `Slide ${s.slide_number} of ${currentPptSlides.length}`;
-  if (counterEl) counterEl.textContent = `${s.slide_number} / ${currentPptSlides.length}`;
+  if (selectEl) selectEl.value = currentPptIndex;
+
+  if (firstBtn) firstBtn.disabled = currentPptIndex === 0;
   if (prevBtn) prevBtn.disabled = currentPptIndex === 0;
   if (nextBtn) nextBtn.disabled = currentPptIndex === currentPptSlides.length - 1;
+  if (lastBtn) lastBtn.disabled = currentPptIndex === currentPptSlides.length - 1;
+
+  // Highlight active thumbnail in outline
+  document.querySelectorAll('.ppt-thumb-item').forEach((item, i) => {
+    item.classList.toggle('active', i === currentPptIndex);
+    if (i === currentPptIndex) {
+      item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  });
 
   if (bodyEl) {
+    let bodyContent = '';
+
+    // Render bullets if present
     if (s.bullets && s.bullets.length > 0) {
-      bodyEl.innerHTML = `
+      bodyContent += `
         <ul class="ppt-bullet-list">
           ${s.bullets.map(b => `<li class="ppt-bullet-item">${b}</li>`).join('')}
         </ul>
       `;
-    } else if (s.raw_text) {
-      bodyEl.innerHTML = `<div style="white-space: pre-wrap; line-height: 1.6;">${s.raw_text}</div>`;
-    } else {
-      bodyEl.innerHTML = `<div style="color: var(--muted); font-style: italic;">(Empty slide)</div>`;
     }
+
+    // Render tables if present
+    if (s.tables && s.tables.length > 0) {
+      s.tables.forEach(tableData => {
+        if (!tableData || !tableData.length) return;
+        const [headers, ...rows] = tableData;
+        bodyContent += `
+          <table class="ppt-table">
+            <thead>
+              <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
+            </thead>
+            <tbody>
+              ${rows.map(row => `<tr>${row.map(cell => `<td>${cell}</td>`).join('')}</tr>`).join('')}
+            </tbody>
+          </table>
+        `;
+      });
+    }
+
+    // Fallback to raw text if no bullets or tables
+    if (!bodyContent && s.raw_text) {
+      bodyContent = `<div style="white-space: pre-wrap; line-height: 1.6;">${s.raw_text}</div>`;
+    }
+
+    if (!bodyContent) {
+      bodyContent = `<div style="color: var(--muted); font-style: italic; margin: auto;">(Slide with visual graphics or diagrams)</div>`;
+    }
+
+    // Append speaker notes if present
+    if (s.notes) {
+      bodyContent += `
+        <div class="ppt-notes-drawer">
+          <div class="ppt-notes-title">📝 Speaker Notes</div>
+          <div>${s.notes}</div>
+        </div>
+      `;
+    }
+
+    bodyEl.innerHTML = bodyContent;
   }
 }
 
@@ -629,23 +815,54 @@ function nextPptSlide() {
   if (currentPptIndex < currentPptSlides.length - 1) renderPptSlide(currentPptIndex + 1);
 }
 
-// Arrow key navigation for PPT
+function togglePptSidebar() {
+  const sb = document.getElementById('pptSidebar');
+  if (sb) sb.classList.toggle('collapsed');
+}
+
+function togglePptFullscreen() {
+  const elem = document.getElementById('pptAppRoot');
+  if (!elem) return;
+  if (!document.fullscreenElement) {
+    elem.requestFullscreen().catch(() => {});
+  } else {
+    document.exitFullscreen().catch(() => {});
+  }
+}
+
+// Arrow key & keyboard navigation for PPT
 window.addEventListener('keydown', e => {
   if (activeIdx !== null && files[activeIdx] && (files[activeIdx].ext === 'pptx' || files[activeIdx].ext === 'ppt')) {
-    if (e.key === 'ArrowLeft') prevPptSlide();
-    if (e.key === 'ArrowRight') nextPptSlide();
+    if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
+      return;
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevPptSlide();
+    else if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
+      e.preventDefault();
+      nextPptSlide();
+    } else if (e.key === 'Home') renderPptSlide(0);
+    else if (e.key === 'End') renderPptSlide(currentPptSlides.length - 1);
+    else if (e.key === 'f' || e.key === 'F') togglePptFullscreen();
   }
 });
 
-async function loadPptxViewer(filename) {
+async function loadPptxViewer(filename, cachedSlides) {
   const container = document.getElementById('pptViewerMount');
   if (!container) return;
-  
+
   try {
-    const res = await fetch(`${API_BASE}/slides/${sessionId}/${encodeURIComponent(filename)}`);
-    if (!res.ok) throw new Error('Slides endpoint returned ' + res.status);
-    const data = await res.json();
-    currentPptSlides = data.slides || [];
+    let slides = cachedSlides;
+    if (!slides || !slides.length) {
+      const res = await fetch(`${API_BASE}/slides/${sessionId}/${encodeURIComponent(filename)}`);
+      if (!res.ok) throw new Error('Slides endpoint returned ' + res.status);
+      const data = await res.json();
+      slides = data.slides || [];
+      if (activeIdx !== null && files[activeIdx]) {
+        files[activeIdx].slides = slides;
+      }
+    }
+
+    currentPptSlides = slides || [];
     currentPptIndex = 0;
 
     if (!currentPptSlides.length) {
@@ -653,24 +870,67 @@ async function loadPptxViewer(filename) {
       return;
     }
 
+    // Build sidebar thumbnails and select options
+    const thumbsHtml = currentPptSlides.map((s, i) => `
+      <div class="ppt-thumb-item${i === 0 ? ' active' : ''}" onclick="renderPptSlide(${i})">
+        <span class="ppt-thumb-num">Slide ${s.slide_number}</span>
+        <span class="ppt-thumb-title">${s.title || `Slide ${s.slide_number}`}</span>
+      </div>
+    `).join('');
+
+    const selectOptionsHtml = currentPptSlides.map((s, i) => `
+      <option value="${i}">Slide ${s.slide_number} of ${currentPptSlides.length}</option>
+    `).join('');
+
     container.innerHTML = `
-      <div class="ppt-container">
-        <div class="ppt-slide-wrapper">
-          <div class="ppt-slide">
-            <div class="ppt-slide-header">
-              <div class="ppt-slide-title" id="pptSlideTitle"></div>
-              <div class="ppt-slide-badge" id="pptSlideBadge"></div>
-            </div>
-            <div class="ppt-slide-body" id="pptSlideBody"></div>
+      <div class="ppt-app" id="pptAppRoot">
+        <!-- Slide Thumbnails Sidebar -->
+        <div class="ppt-sidebar" id="pptSidebar">
+          <div class="ppt-sidebar-head">
+            <span>Slides (${currentPptSlides.length})</span>
+            <button class="clear-btn" onclick="togglePptSidebar()" title="Collapse outline">✕</button>
+          </div>
+          <div class="ppt-thumbs-list">
+            ${thumbsHtml}
           </div>
         </div>
-        <div class="ppt-controls">
-          <button class="ppt-ctrl-btn" id="pptPrevBtn" onclick="prevPptSlide()">◀ Previous</button>
-          <span class="ppt-counter" id="pptCounter">1 / ${currentPptSlides.length}</span>
-          <button class="ppt-ctrl-btn" id="pptNextBtn" onclick="nextPptSlide()">Next ▶</button>
+
+        <!-- Main Slide Presentation Area -->
+        <div class="ppt-main">
+          <div class="ppt-canvas-area">
+            <div class="ppt-slide">
+              <div class="ppt-slide-header">
+                <div class="ppt-slide-title" id="pptSlideTitle"></div>
+                <div class="ppt-slide-badge" id="pptSlideBadge"></div>
+              </div>
+              <div class="ppt-slide-body" id="pptSlideBody"></div>
+            </div>
+          </div>
+
+          <!-- Controls Bar -->
+          <div class="ppt-controls-bar">
+            <div class="ppt-ctrl-group">
+              <button class="ppt-ctrl-btn" onclick="togglePptSidebar()" title="Toggle Slides Outline">☰ Slides</button>
+              <button class="ppt-ctrl-btn" id="pptFirstBtn" onclick="renderPptSlide(0)" title="First slide">|◀</button>
+              <button class="ppt-ctrl-btn" id="pptPrevBtn" onclick="prevPptSlide()" title="Previous slide (Left Arrow)">◀</button>
+            </div>
+
+            <div class="ppt-ctrl-group">
+              <select class="ppt-select" id="pptSlideSelect" onchange="renderPptSlide(parseInt(this.value, 10))">
+                ${selectOptionsHtml}
+              </select>
+            </div>
+
+            <div class="ppt-ctrl-group">
+              <button class="ppt-ctrl-btn" id="pptNextBtn" onclick="nextPptSlide()" title="Next slide (Right Arrow / Space)">▶</button>
+              <button class="ppt-ctrl-btn" id="pptLastBtn" onclick="renderPptSlide(currentPptSlides.length - 1)" title="Last slide">▶|</button>
+              <button class="ppt-ctrl-btn" onclick="togglePptFullscreen()" title="Fullscreen (F)">⛶</button>
+            </div>
+          </div>
         </div>
       </div>
     `;
+
     renderPptSlide(0);
   } catch (err) {
     container.innerHTML = `
@@ -681,17 +941,25 @@ async function loadPptxViewer(filename) {
   }
 }
 
-async function loadDocxViewer(filename) {
+async function loadDocxViewer(filename, cachedText) {
   const container = document.getElementById('docxViewerMount');
   if (!container) return;
 
   try {
-    const res = await fetch(`${API_BASE}/document/${sessionId}/${encodeURIComponent(filename)}`);
-    if (!res.ok) throw new Error('Document endpoint returned ' + res.status);
-    const data = await res.json();
+    let text = cachedText;
+    if (!text) {
+      const res = await fetch(`${API_BASE}/document/${sessionId}/${encodeURIComponent(filename)}`);
+      if (!res.ok) throw new Error('Document endpoint returned ' + res.status);
+      const data = await res.json();
+      text = data.text || '';
+      if (activeIdx !== null && files[activeIdx]) {
+        files[activeIdx].text = text;
+      }
+    }
+
     container.innerHTML = `
       <div class="docx-container">
-        <div class="docx-paper">${data.text || '(Empty document)'}</div>
+        <div class="docx-paper">${text || '(Empty document)'}</div>
       </div>
     `;
   } catch (err) {
@@ -722,9 +990,9 @@ function selectFile(i) {
     };
     reader.readAsText(f.rawFile);
   } else if (f.ext === 'pptx' || f.ext === 'ppt') {
-    viewerHtml = `<div id="pptViewerMount" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;"><div class="viewer-empty"><p>Loading PowerPoint slides…</p></div></div>`;
+    viewerHtml = `<div id="pptViewerMount" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></div>`;
   } else if (f.ext === 'docx') {
-    viewerHtml = `<div id="docxViewerMount" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;"><div class="viewer-empty"><p>Loading Word document…</p></div></div>`;
+    viewerHtml = `<div id="docxViewerMount" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></div>`;
   } else {
     const icon = EXT_ICONS[f.ext] || '📄';
     viewerHtml = `
@@ -761,9 +1029,9 @@ function selectFile(i) {
   `;
 
   if (f.ext === 'pptx' || f.ext === 'ppt') {
-    loadPptxViewer(f.name);
+    loadPptxViewer(f.name, f.slides);
   } else if (f.ext === 'docx') {
-    loadDocxViewer(f.name);
+    loadDocxViewer(f.name, f.text);
   }
 }
 
