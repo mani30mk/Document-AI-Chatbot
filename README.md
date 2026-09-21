@@ -40,7 +40,7 @@ A full-stack Retrieval-Augmented Generation (RAG) application that allows you to
    ```
 
 5. **Open the App:**
-   Visit `http://localhost:8000` in your browser (or double-click `index.html`). Enter your **Gemini API Key** in the top navigation bar, click "Connect", and start uploading your study files!
+   Visit `http://localhost:8000` in your browser. The app connects automatically and is ready to upload files and answer questions!
 
 ---
 

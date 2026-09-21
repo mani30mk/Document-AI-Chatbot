@@ -138,10 +138,8 @@
 <nav>
   <div class="logo">📚 <span>Study</span>RAG</div>
   <div class="nav-right">
-    <div class="status-dot" id="statusDot"></div>
-    <span class="status-label" id="statusLabel">Not connected</span>
-    <input class="key-input" type="password" id="apiKeyInput" placeholder="Gemini API key…" autocomplete="off" />
-    <button class="btn btn-primary" onclick="initSession()">Connect</button>
+    <div class="status-dot ok" id="statusDot"></div>
+    <span class="status-label" id="statusLabel">Connected</span>
   </div>
 </nav>
 
@@ -189,13 +187,13 @@
     <div class="avatar">🤖</div>
     <div>
       <div class="title">RAG assistant</div>
-      <div class="subtitle" id="chatSubtitle">Upload files and connect to start</div>
+      <div class="subtitle" id="chatSubtitle">Upload files to begin</div>
     </div>
     <span class="chat-history-badge" id="historyBadge">0 turns</span>
     <button class="clear-btn" onclick="clearHistory()" title="Clear conversation">✕ Clear</button>
   </div>
   <div class="chat-messages" id="chatMessages">
-    <div class="bubble bot">Hi! Connect with your Gemini API key above, upload your study files, then ask me anything about them.</div>
+    <div class="bubble bot">Hi! Upload your study files on the left, then ask me anything about them.</div>
   </div>
   <div class="chat-input-row">
     <input type="text" id="chatInput" placeholder="Ask about your files…" onkeydown="if(event.key==='Enter')sendMessage()" />
@@ -213,7 +211,6 @@ const API_BASE = (window.location.origin && window.location.origin.startsWith('h
 
 // ── State ─────────────────────────────────────────────────
 let sessionId = null;
-let apiKey = null;
 let chatOpen = false;
 let turnCount = 0;
 let files = [];   // { name, size, ext }
@@ -222,33 +219,27 @@ let isSending = false;
 
 // ── Session init ──────────────────────────────────────────
 async function initSession() {
-  const key = document.getElementById('apiKeyInput').value.trim();
-  if (!key) { showToast('Enter your Gemini API key first'); return; }
-  apiKey = key;
-
   try {
-    const res = await fetch(`${API_BASE}/session/new`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ gemini_api_key: apiKey }),
-    });
+    const res = await fetch(`${API_BASE}/session/new`, { method: 'POST' });
     if (!res.ok) throw new Error();
     const data = await res.json();
     sessionId = data.session_id;
     setStatus(true);
-    showToast('Connected! Now upload your study files.');
   } catch {
     setStatus(false);
     showToast('Cannot reach backend. Is the server running?');
   }
 }
 
+// Auto-initialize session on load
+window.addEventListener('DOMContentLoaded', initSession);
+
 function setStatus(ok) {
   document.getElementById('statusDot').className = 'status-dot ' + (ok ? 'ok' : 'err');
   document.getElementById('statusLabel').textContent = ok ? 'Connected' : 'Disconnected';
   document.getElementById('chatSubtitle').textContent = ok
     ? (files.length ? `${files.length} file(s) loaded` : 'Upload files to begin')
-    : 'Connect first';
+    : 'Connecting…';
 }
 
 // ── File upload ───────────────────────────────────────────
@@ -268,15 +259,15 @@ zone.addEventListener('drop', async e => {
 });
 
 async function uploadFiles(fileList) {
-  if (!sessionId) { showToast('Connect first (enter API key and click Connect)'); return; }
+  if (!sessionId) {
+    await initSession();
+    if (!sessionId) { showToast('Connecting to server… please try again.'); return; }
+  }
   if (!fileList.length) return;
 
   document.getElementById('uploadingIndicator').style.display = 'block';
   const form = new FormData();
   fileList.forEach(f => form.append('files', f));
-  if (apiKey) {
-    form.append('gemini_api_key', apiKey);
-  }
 
   try {
     const res = await fetch(`${API_BASE}/upload/${sessionId}`, { method: 'POST', body: form });
@@ -406,9 +397,12 @@ async function sendMessage() {
   const q = input.value.trim();
   if (!q) return;
 
-  if (!sessionId || !apiKey) {
-    addBubble('Please connect first — enter your Gemini API key and click Connect.', 'error');
-    return;
+  if (!sessionId) {
+    await initSession();
+    if (!sessionId) {
+      addBubble('Connecting to server… please try again in a moment.', 'error');
+      return;
+    }
   }
   if (!files.length) {
     addBubble('Upload at least one study file first, then ask your question.', 'error');
@@ -425,7 +419,7 @@ async function sendMessage() {
     const res = await fetch(`${API_BASE}/ask`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, question: q, gemini_api_key: apiKey }),
+      body: JSON.stringify({ session_id: sessionId, question: q }),
     });
     const data = await res.json();
 
@@ -444,7 +438,7 @@ async function sendMessage() {
       document.getElementById('historyBadge').textContent = turnCount + ' turn' + (turnCount !== 1 ? 's' : '');
     }
   } catch {
-    typingBubble.textContent = 'Connection error — is the backend running on :8000?';
+    typingBubble.textContent = 'Connection error — is the backend running?';
     typingBubble.className = 'bubble error';
   } finally {
     isSending = false;
@@ -508,9 +502,12 @@ function toggleSummary(show) {
 }
 
 async function summarizeFile(filename) {
-  if (!sessionId || !apiKey) {
-    showToast('Please connect first — enter your Gemini API key and click Connect.');
-    return;
+  if (!sessionId) {
+    await initSession();
+    if (!sessionId) {
+      showToast('Connecting to server… please try again.');
+      return;
+    }
   }
   
   const btn = document.getElementById('btnSummarize');
@@ -521,7 +518,7 @@ async function summarizeFile(filename) {
     const res = await fetch(`${API_BASE}/summarize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, filename: filename, gemini_api_key: apiKey }),
+      body: JSON.stringify({ session_id: sessionId, filename: filename }),
     });
     
     const data = await res.json();

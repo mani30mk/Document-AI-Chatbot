@@ -100,10 +100,13 @@ Context:
 ])
 
 
-def get_llm(api_key: str | None = None) -> ChatGoogleGenerativeAI:
-    key = api_key or os.getenv("GEMINI_API_KEY")
+def get_llm() -> ChatGoogleGenerativeAI:
+    key = os.getenv("GEMINI_API_KEY")
     if not key:
-        raise ValueError("Google Gemini API key is required. Provide it in the request or set GEMINI_API_KEY.")
+        raise ValueError(
+            "GEMINI_API_KEY environment variable is not set. "
+            "Please configure GEMINI_API_KEY in Render or in your .env file."
+        )
     return ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
         google_api_key=key,
@@ -147,20 +150,14 @@ def get_embeddings() -> FastEmbedEmbeddings:
 
 
 # ── Request / Response models ────────────────────────────────────────────────
-class NewSessionRequest(BaseModel):
-    gemini_api_key: str | None = None
-
-
 class AskRequest(BaseModel):
     session_id: str
     question: str
-    gemini_api_key: str | None = None
 
 
 class SummarizeRequest(BaseModel):
     session_id: str
     filename: str
-    gemini_api_key: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -177,14 +174,12 @@ class SessionResponse(BaseModel):
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.post("/session/new", response_model=SessionResponse)
-def new_session(req: NewSessionRequest | None = None):
+def new_session():
     """Create a new chat/upload session."""
     sid = str(uuid.uuid4())
     session_histories[sid] = []
     session_files[sid] = []
     session_docs[sid] = {}
-    if req and req.gemini_api_key:
-        session_api_keys[sid] = req.gemini_api_key
     return SessionResponse(session_id=sid, files=[])
 
 
@@ -192,7 +187,6 @@ def new_session(req: NewSessionRequest | None = None):
 async def upload_files(
     session_id: str,
     files: List[UploadFile] = File(...),
-    gemini_api_key: str | None = Form(None),
 ):
     """
     Upload one or more study files into the session's vector store.
@@ -200,10 +194,6 @@ async def upload_files(
     """
     if session_id not in session_histories:
         raise HTTPException(status_code=404, detail="Session not found. Call /session/new first.")
-
-    api_key = gemini_api_key or session_api_keys.get(session_id) or os.getenv("GEMINI_API_KEY")
-    if api_key:
-        session_api_keys[session_id] = api_key
 
     all_docs = []
     uploaded_names = []
@@ -299,12 +289,10 @@ async def ask(req: AskRequest):
     if sid not in session_histories:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    api_key = req.gemini_api_key or session_api_keys.get(sid) or os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Gemini API key is required to query the model. Please provide your API key or set GEMINI_API_KEY.",
-        )
+    try:
+        llm = get_llm()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
     retriever = None
     if supabase_client:
@@ -328,8 +316,6 @@ async def ask(req: AskRequest):
                 detail="No files uploaded for this session yet. Upload files first via /upload/{session_id}.",
             )
         retriever = session_vectorstores[sid].as_retriever(search_kwargs={"k": 4})
-
-    llm = get_llm(api_key)
 
     # Build the chain with history
     history = session_histories[sid]
@@ -369,15 +355,12 @@ async def summarize(req: SummarizeRequest):
     if sid not in session_docs or fname not in session_docs[sid]:
         raise HTTPException(status_code=404, detail="File not found in session.")
 
-    api_key = req.gemini_api_key or session_api_keys.get(sid) or os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Gemini API key is required to summarize. Please provide your API key or set GEMINI_API_KEY.",
-        )
+    try:
+        llm = get_llm()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
     text = session_docs[sid][fname]
-    llm = get_llm(api_key)
     
     prompt = ChatPromptTemplate.from_template(
         "You are an expert summarizer. Please provide a comprehensive and concise summary of the following document:\n\n{text}"
