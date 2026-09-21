@@ -63,6 +63,7 @@ session_vectorstores: dict[str, Chroma] = {}
 session_histories: dict[str, list] = {}
 session_files: dict[str, list[str]] = {}
 session_docs: dict[str, dict[str, str]] = {}
+session_slides: dict[str, dict[str, list]] = {}
 session_api_keys: dict[str, str] = {}
 
 # Supabase (persistent cloud storage & pgvector)
@@ -123,17 +124,36 @@ def load_docx(path: str) -> list[Document]:
     return [Document(page_content="\n\n".join(text_parts), metadata={"source": path})]
 
 
-def load_pptx(path: str) -> list[Document]:
+def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
     prs = Presentation(path)
     docs = []
+    slides_data = []
     for slide_idx, slide in enumerate(prs.slides):
         slide_texts = []
+        title = ""
+        bullets = []
         for shape in slide.shapes:
             if shape.has_text_frame:
                 for paragraph in shape.text_frame.paragraphs:
                     text = paragraph.text.strip()
                     if text:
                         slide_texts.append(text)
+                        if not title and (shape == getattr(slide.shapes, "title", None) or len(text) < 75):
+                            title = text
+                        elif text != title:
+                            bullets.append(text)
+        if not title and bullets:
+            title = bullets.pop(0)
+        if not title:
+            title = f"Slide {slide_idx + 1}"
+
+        slides_data.append({
+            "slide_number": slide_idx + 1,
+            "title": title,
+            "bullets": bullets,
+            "raw_text": "\n".join(slide_texts),
+        })
+
         if slide_texts:
             docs.append(
                 Document(
@@ -141,18 +161,18 @@ def load_pptx(path: str) -> list[Document]:
                     metadata={"slide": slide_idx + 1, "source": path},
                 )
             )
-    return docs
+    return docs, slides_data
 
 
-def load_file(path: str, ext: str) -> list[Document]:
+def load_file(path: str, ext: str) -> tuple[list[Document], list[dict] | None]:
     if ext == ".pdf":
-        return PyPDFLoader(path).load()
+        return PyPDFLoader(path).load(), None
     elif ext == ".docx":
-        return load_docx(path)
+        return load_docx(path), None
     elif ext == ".pptx":
         return load_pptx(path)
     elif ext == ".txt":
-        return TextLoader(path).load()
+        return TextLoader(path).load(), None
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
@@ -253,9 +273,11 @@ async def upload_files(
             tmp_path = tmp.name
 
         try:
-            docs = load_file(tmp_path, ext)
+            docs, slides_info = load_file(tmp_path, ext)
             all_docs.extend(docs)
             uploaded_names.append(uf.filename)
+            if slides_info:
+                session_slides.setdefault(session_id, {})[uf.filename] = slides_info
             
             # Store full text for summarization
             full_text = "\n\n".join(d.page_content for d in docs)
@@ -326,7 +348,30 @@ async def upload_files(
         "message": f"Uploaded {len(uploaded_names)} file(s), indexed {len(chunks)} chunks.",
         "files": session_files[session_id],
         "chunks": len(chunks),
+        "slides": session_slides.get(session_id, {}),
         "storage": "supabase" if stored_in_supabase else "in-memory",
+    }
+
+
+@app.get("/slides/{session_id}/{filename}")
+def get_slides(session_id: str, filename: str):
+    """Retrieve structured slides for PPT viewer."""
+    if session_id not in session_slides or filename not in session_slides[session_id]:
+        raise HTTPException(status_code=404, detail="Slides not found.")
+    return {
+        "filename": filename,
+        "slides": session_slides[session_id][filename],
+    }
+
+
+@app.get("/document/{session_id}/{filename}")
+def get_document_text(session_id: str, filename: str):
+    """Retrieve extracted document text for DOCX/TXT viewer."""
+    if session_id not in session_docs or filename not in session_docs[session_id]:
+        raise HTTPException(status_code=404, detail="Document text not found.")
+    return {
+        "filename": filename,
+        "text": session_docs[session_id][filename],
     }
 
 
