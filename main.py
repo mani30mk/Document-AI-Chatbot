@@ -78,6 +78,23 @@ session_slides: dict[str, dict[str, list]] = {}
 session_api_keys: dict[str, str] = {}
 
 
+def get_or_load_vectorstore(session_id: str) -> Chroma | None:
+    """Retrieve in-memory Chroma or restore from disk-persisted directory."""
+    if session_id in session_vectorstores:
+        return session_vectorstores[session_id]
+
+    vector_dir = os.path.join(UPLOAD_DIR, session_id, "chroma_db")
+    if os.path.exists(vector_dir):
+        try:
+            embeddings = get_embeddings()
+            vs = Chroma(persist_directory=vector_dir, embedding_function=embeddings)
+            session_vectorstores[session_id] = vs
+            return vs
+        except Exception as e:
+            print(f"Notice: Could not load Chroma from disk for {session_id} ({e})")
+    return None
+
+
 def load_sessions_from_disk():
     global session_histories, session_files, session_docs, session_slides
     if os.path.exists(SESSIONS_FILE):
@@ -134,7 +151,7 @@ if SUPABASE_URL and SUPABASE_KEY:
 EMBEDDINGS = None
 EMBEDDINGS_ERROR = None
 
-TEXT_SPLITTER = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+TEXT_SPLITTER = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
 RAG_PROMPT = ChatPromptTemplate.from_messages([
     (
@@ -569,8 +586,14 @@ async def upload_files(
     session_dir = os.path.join(UPLOAD_DIR, session_id)
     os.makedirs(session_dir, exist_ok=True)
 
+    ALLOWED_EXTENSIONS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".txt"}
     for uf in files:
         ext = os.path.splitext(uf.filename)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '{ext}' for file '{uf.filename}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+            )
         file_bytes = await uf.read()
 
         saved_path = os.path.join(session_dir, uf.filename)
@@ -635,12 +658,16 @@ async def upload_files(
             print(f"Warning: Supabase vector store insert failed ({err}), falling back to Chroma.")
 
     if not stored_in_supabase:
+        vector_dir = os.path.join(session_dir, "chroma_db")
+        os.makedirs(vector_dir, exist_ok=True)
         if session_id in session_vectorstores:
             session_vectorstores[session_id].add_texts(
                 [c.page_content for c in chunks]
             )
         else:
-            session_vectorstores[session_id] = Chroma.from_documents(chunks, embeddings)
+            session_vectorstores[session_id] = Chroma.from_documents(
+                chunks, embeddings, persist_directory=vector_dir
+            )
 
     session_files[session_id].extend(uploaded_names)
     save_sessions_to_disk()
@@ -697,18 +724,21 @@ async def ask(req: AskRequest):
                 query_name="match_documents",
             )
             retriever = supabase_vectorstore.as_retriever(
-                search_kwargs={"k": 4, "filter": {"session_id": sid}}
+                search_kwargs={"k": 5, "filter": {"session_id": sid}}
             )
         except Exception as err:
             print(f"Supabase retriever error ({err}), falling back to in-memory.")
 
     if retriever is None:
-        if sid not in session_vectorstores:
-            raise HTTPException(
-                status_code=400,
-                detail="No files uploaded for this session yet. Upload files first via /upload/{session_id}.",
-            )
-        retriever = session_vectorstores[sid].as_retriever(search_kwargs={"k": 4})
+        vs = get_or_load_vectorstore(sid)
+        if vs is not None:
+            retriever = vs.as_retriever(search_kwargs={"k": 5})
+        else:
+            if sid not in session_histories and sid not in session_files:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No files uploaded for this session yet. Upload files first via /upload/{session_id}.",
+                )
 
     # Build the chain with history
     history = session_histories[sid]
@@ -718,9 +748,10 @@ async def ask(req: AskRequest):
         try:
             retrieved_docs = retriever.invoke(req.question)
         except Exception as r_err:
-            print(f"Primary retriever failed ({r_err}), falling back to in-memory Chroma...")
-            if sid in session_vectorstores:
-                retriever = session_vectorstores[sid].as_retriever(search_kwargs={"k": 4})
+            print(f"Primary retriever failed ({r_err}), falling back to disk/in-memory Chroma...")
+            vs = get_or_load_vectorstore(sid)
+            if vs is not None:
+                retriever = vs.as_retriever(search_kwargs={"k": 5})
                 try:
                     retrieved_docs = retriever.invoke(req.question)
                 except Exception as c_err:

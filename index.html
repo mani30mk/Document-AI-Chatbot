@@ -836,6 +836,84 @@
     padding-left: 6px;
   }
 
+  /* Formatted Markdown in Chat & Summary */
+  .bubble.bot .message-content-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .bubble.bot p, .summary-text-content p {
+    margin: 0 0 6px 0;
+  }
+  .bubble.bot p:last-child, .summary-text-content p:last-child {
+    margin-bottom: 0;
+  }
+  .bubble.bot ul, .bubble.bot ol, .summary-text-content ul, .summary-text-content ol {
+    margin: 4px 0 8px 18px;
+    padding: 0;
+  }
+  .bubble.bot li, .summary-text-content li {
+    margin-bottom: 4px;
+    line-height: 1.5;
+  }
+  .bubble.bot .inline-code, .summary-text-content .inline-code {
+    background: #0f172a;
+    color: #38bdf8;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+    border: 1px solid #1e293b;
+  }
+  .bubble.bot .bold-text, .summary-text-content .bold-text {
+    font-weight: 600;
+    color: #f1f5f9;
+  }
+  .code-block-container {
+    background: #090d14;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 6px 0;
+  }
+  .code-block-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #0f172a;
+    padding: 4px 10px;
+    border-bottom: 1px solid #1e293b;
+    font-size: 11px;
+    color: #94a3b8;
+  }
+  .code-block-copy-btn {
+    background: transparent;
+    border: 1px solid #334155;
+    color: #94a3b8;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .code-block-copy-btn:hover {
+    background: #1e293b;
+    color: #f1f5f9;
+    border-color: #475569;
+  }
+  .code-block-pre {
+    margin: 0;
+    padding: 10px 12px;
+    overflow-x: auto;
+    font-size: 12px;
+    line-height: 1.5;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+    color: #e2e8f0;
+  }
+  .code-block-code {
+    font-family: inherit;
+  }
+
   /* Summary Tab View */
   .summary-panel-view {
     flex: 1;
@@ -1239,6 +1317,7 @@
       <button class="chat-tab-pill active" id="tabChatPill" onclick="switchChatPanelTab('chat')">AI Chat</button>
     </div>
     <div class="chat-header-actions">
+      <span id="chatSubtitle" style="display: none;"></span>
       <div id="chatSpecificActions" style="display: flex; align-items: center; gap: 8px;">
         <span class="chat-history-badge" id="historyBadge">0 turns</span>
         <button class="chat-clear-btn" onclick="clearHistory()" title="Clear conversation">✕ Clear</button>
@@ -1343,6 +1422,8 @@ let isSending = false;
 let chatHistory = []; // [ { role, content, youtube_sources, sources_used, timestamp } ]
 let currentPptMode = 'original'; // 'original' | 'google' | 'outline'
 let currentPptFilename = '';
+let currentPptSlides = [];
+let currentPptIndex = 0;
 
 // ── LocalStorage Persistence ──────────────────────────────
 function saveLocalState() {
@@ -1503,6 +1584,11 @@ async function startNewSession() {
   localStorage.removeItem('study_rag_files');
   localStorage.removeItem('study_rag_chat_history');
   localStorage.removeItem('study_rag_active_idx');
+  files.forEach(f => {
+    if (f.url && f.url.startsWith('blob:')) {
+      try { URL.revokeObjectURL(f.url); } catch (_) {}
+    }
+  });
   files = [];
   chatHistory = [];
   activeIdx = null;
@@ -1564,9 +1650,12 @@ window.addEventListener('DOMContentLoaded', initSession);
 function setStatus(ok) {
   document.getElementById('statusDot').className = 'status-dot ' + (ok ? 'ok' : 'err');
   document.getElementById('statusLabel').textContent = ok ? 'Connected' : 'Disconnected';
-  document.getElementById('chatSubtitle').textContent = ok
-    ? (files.length ? `${files.length} file(s) loaded` : 'Upload files to begin')
-    : 'Connecting…';
+  const sub = document.getElementById('chatSubtitle');
+  if (sub) {
+    sub.textContent = ok
+      ? (files.length ? `${files.length} file(s) loaded` : 'Upload files to begin')
+      : 'Connecting…';
+  }
 }
 
 // ── File upload ───────────────────────────────────────────
@@ -1671,7 +1760,8 @@ async function uploadFiles(fileList) {
       renderFileList();
       saveLocalState();
       showToast(`✓ ${fileList.length} file(s) indexed (${data.chunks} chunks)`);
-      document.getElementById('chatSubtitle').textContent = `${files.length} file(s) loaded`;
+      const sub = document.getElementById('chatSubtitle');
+      if (sub) sub.textContent = `${files.length} file(s) loaded`;
       document.getElementById('fileCountTag').textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
       hideProgress(2500);
 
@@ -1713,9 +1803,6 @@ function renderFileList() {
     </div>
   `).join('');
 }
-
-let currentPptSlides = [];
-let currentPptIndex = 0;
 
 function renderPptSlide(idx) {
   if (!currentPptSlides.length) return;
@@ -2214,6 +2301,172 @@ function removeFile(e, i) {
   showToast('File removed from view (still in vector store for this session)');
 }
 
+// ── Chat Formatting & Helpers ─────────────────────────────
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function parseInlineStylesToHtml(text) {
+  if (!text) return '';
+  // Split by inline code: `code`
+  const codeParts = text.split(/(`[^`\n]+`)/g);
+  return codeParts.map(part => {
+    if (part.startsWith('`') && part.endsWith('`')) {
+      const codeContent = part.slice(1, -1);
+      return `<code class="inline-code">${escapeHtml(codeContent)}</code>`;
+    }
+    // Parse bold **text**
+    const boldParts = part.split(/(\*\*[^*\n]+\*\*)/g);
+    return boldParts.map(bPart => {
+      if (bPart.startsWith('**') && bPart.endsWith('**')) {
+        const boldContent = bPart.slice(2, -2);
+        return `<strong class="bold-text">${escapeHtml(boldContent)}</strong>`;
+      }
+      return escapeHtml(bPart);
+    }).join('');
+  }).join('');
+}
+
+function formatMarkdownToHtml(rawText) {
+  if (!rawText) return '';
+  
+  // Split by fenced code blocks: ```lang ... ```
+  const parts = rawText.split(/(```[\s\S]*?```)/g);
+  let html = '<div class="message-content-wrapper">';
+
+  parts.forEach(part => {
+    if (part.startsWith('```') && part.endsWith('```')) {
+      const inner = part.slice(3, -3);
+      const firstNewLine = inner.indexOf('\n');
+      let lang = 'text';
+      let code = inner;
+      if (firstNewLine !== -1) {
+        lang = inner.substring(0, firstNewLine).trim() || 'text';
+        code = inner.substring(firstNewLine + 1);
+      }
+      if (code.endsWith('\n')) code = code.slice(0, -1);
+
+      const safeLang = escapeHtml(lang);
+      const safeCode = escapeHtml(code);
+
+      html += `
+        <div class="code-block-container">
+          <div class="code-block-header">
+            <span class="code-block-lang">${safeLang}</span>
+            <button class="code-block-copy-btn" onclick="copyCodeFromBlock(this)">Copy code</button>
+          </div>
+          <pre class="code-block-pre"><code class="code-block-code">${safeCode}</code></pre>
+        </div>
+      `;
+    } else {
+      // Process text lines (lists, paragraphs, headers)
+      const lines = part.split('\n');
+      let inUl = false;
+      let inOl = false;
+
+      const closeList = () => {
+        if (inUl) { html += '</ul>'; inUl = false; }
+        if (inOl) { html += '</ol>'; inOl = false; }
+      };
+
+      lines.forEach(line => {
+        const bulletMatch = line.match(/^\s*[-*+]\s+(.*)/);
+        const numberMatch = line.match(/^\s*\d+\.\s+(.*)/);
+
+        if (bulletMatch) {
+          if (inOl) closeList();
+          if (!inUl) { html += '<ul class="message-list-ul">'; inUl = true; }
+          html += `<li class="message-list-item">${parseInlineStylesToHtml(bulletMatch[1])}</li>`;
+        } else if (numberMatch) {
+          if (inUl) closeList();
+          if (!inOl) { html += '<ol class="message-list-ol">'; inOl = true; }
+          html += `<li class="message-list-item">${parseInlineStylesToHtml(numberMatch[1])}</li>`;
+        } else {
+          closeList();
+          const trimmed = line.trim();
+          if (!trimmed) {
+            // empty line
+          } else if (trimmed.startsWith('### ')) {
+            html += `<h4 style="margin: 6px 0 2px 0; font-size: 13px; font-weight: 600; color: #f1f5f9;">${parseInlineStylesToHtml(trimmed.slice(4))}</h4>`;
+          } else if (trimmed.startsWith('## ')) {
+            html += `<h3 style="margin: 8px 0 4px 0; font-size: 14px; font-weight: 600; color: #f1f5f9;">${parseInlineStylesToHtml(trimmed.slice(3))}</h3>`;
+          } else if (trimmed.startsWith('# ')) {
+            html += `<h2 style="margin: 10px 0 4px 0; font-size: 15px; font-weight: 700; color: #f1f5f9;">${parseInlineStylesToHtml(trimmed.slice(2))}</h2>`;
+          } else {
+            html += `<p class="message-paragraph">${parseInlineStylesToHtml(line)}</p>`;
+          }
+        }
+      });
+      closeList();
+    }
+  });
+
+  html += '</div>';
+  return html;
+}
+
+function copyCodeFromBlock(btn) {
+  const container = btn.closest('.code-block-container');
+  if (!container) return;
+  const codeEl = container.querySelector('.code-block-code');
+  if (!codeEl) return;
+  navigator.clipboard.writeText(codeEl.textContent).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy code'; }, 2000);
+  }).catch(() => {
+    btn.textContent = 'Failed';
+    setTimeout(() => { btn.textContent = 'Copy code'; }, 2000);
+  });
+}
+
+function renderFormattedMessage(element, rawText) {
+  element.innerHTML = formatMarkdownToHtml(rawText);
+}
+
+function buildYouTubeSourcesElement(sources) {
+  if (!sources || !sources.length) return null;
+  const ytBox = document.createElement('div');
+  ytBox.className = 'yt-sources-box';
+  ytBox.innerHTML = `
+    <div class="yt-sources-title">🎥 Recommended Video Tutorials:</div>
+    <div class="yt-cards-container">
+      ${sources.map(v => {
+        const safeTitleAttr = escapeHtml(v.title || '');
+        const safeTitleJs = (v.title || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        const safeChannel = escapeHtml(v.channel || '');
+        const safeDuration = escapeHtml(v.duration || '');
+        const safeThumb = escapeHtml(v.thumbnail || '');
+        const safeUrl = escapeHtml(v.url || `https://www.youtube.com/watch?v=${v.id}`);
+        const safeId = escapeHtml(v.id || '');
+        return `
+          <div class="yt-card">
+            <div class="yt-thumb-wrap" onclick="openVideoModal('${safeId}', '${safeTitleJs}')" title="Play tutorial">
+              <img src="${safeThumb}" class="yt-thumb" alt="${safeTitleAttr}" />
+              ${safeDuration ? `<span class="yt-duration">${safeDuration}</span>` : ''}
+              <div class="yt-play-overlay">▶</div>
+            </div>
+            <div class="yt-card-body">
+              <div class="yt-card-title" title="${safeTitleAttr}">${safeTitleAttr}</div>
+              <div class="yt-card-channel">${safeChannel}</div>
+              <div class="yt-card-actions">
+                <button class="yt-watch-btn" onclick="openVideoModal('${safeId}', '${safeTitleJs}')">▶ Watch Here</button>
+                <a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="yt-link-btn" title="Open in YouTube">↗ YouTube</a>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+  return ytBox;
+}
+
 // ── Chat ──────────────────────────────────────────────────
 function toggleChat() {
   chatOpen = !chatOpen;
@@ -2269,40 +2522,12 @@ async function sendMessage() {
       typingBubble.textContent = data.detail || 'Something went wrong.';
       typingBubble.className = 'bubble error';
     } else {
-      typingBubble.textContent = data.answer;
       typingBubble.classList.remove('typing');
+      renderFormattedMessage(typingBubble, data.answer);
 
       // YouTube Video Tutorials recommendation
-      if (data.youtube_sources && data.youtube_sources.length > 0) {
-        const ytBox = document.createElement('div');
-        ytBox.className = 'yt-sources-box';
-        ytBox.innerHTML = `
-          <div class="yt-sources-title">🎥 Recommended Video Tutorials:</div>
-          <div class="yt-cards-container">
-            ${data.youtube_sources.map(v => {
-              const safeTitle = (v.title || '').replace(/'/g, "\\'");
-              return `
-                <div class="yt-card">
-                  <div class="yt-thumb-wrap" onclick="openVideoModal('${v.id}', '${safeTitle}')" title="Play tutorial">
-                    <img src="${v.thumbnail}" class="yt-thumb" alt="${v.title}" />
-                    ${v.duration ? `<span class="yt-duration">${v.duration}</span>` : ''}
-                    <div class="yt-play-overlay">▶</div>
-                  </div>
-                  <div class="yt-card-body">
-                    <div class="yt-card-title" title="${v.title}">${v.title}</div>
-                    <div class="yt-card-channel">${v.channel}</div>
-                    <div class="yt-card-actions">
-                      <button class="yt-watch-btn" onclick="openVideoModal('${v.id}', '${safeTitle}')">▶ Watch Here</button>
-                      <a href="${v.url}" target="_blank" rel="noopener noreferrer" class="yt-link-btn" title="Open in YouTube">↗ YouTube</a>
-                    </div>
-                  </div>
-                </div>
-              `;
-            }).join('')}
-          </div>
-        `;
-        typingBubble.appendChild(ytBox);
-      }
+      const ytEl = buildYouTubeSourcesElement(data.youtube_sources);
+      if (ytEl) typingBubble.appendChild(ytEl);
 
       // Sources tag
       const src = document.createElement('div');
@@ -2422,42 +2647,18 @@ function renderChatHistory() {
   chatHistory.forEach(item => {
     const d = document.createElement('div');
     d.className = 'bubble ' + item.role;
-    d.textContent = item.content;
+    if (item.role === 'bot') {
+      renderFormattedMessage(d, item.content);
+    } else {
+      d.textContent = item.content;
+    }
     msgs.appendChild(d);
 
     if (item.role === 'user') {
       turnCount++;
     } else if (item.role === 'bot') {
-      if (item.youtube_sources && item.youtube_sources.length > 0) {
-        const ytBox = document.createElement('div');
-        ytBox.className = 'yt-sources-box';
-        ytBox.innerHTML = `
-          <div class="yt-sources-title">🎥 Recommended Video Tutorials:</div>
-          <div class="yt-cards-container">
-            ${item.youtube_sources.map(v => {
-              const safeTitle = (v.title || '').replace(/'/g, "\\'");
-              return `
-                <div class="yt-card">
-                  <div class="yt-thumb-wrap" onclick="openVideoModal('${v.id}', '${safeTitle}')" title="Play tutorial">
-                    <img src="${v.thumbnail}" class="yt-thumb" alt="${v.title}" />
-                    ${v.duration ? `<span class="yt-duration">${v.duration}</span>` : ''}
-                    <div class="yt-play-overlay">▶</div>
-                  </div>
-                  <div class="yt-card-body">
-                    <div class="yt-card-title" title="${v.title}">${v.title}</div>
-                    <div class="yt-card-channel">${v.channel}</div>
-                    <div class="yt-card-actions">
-                      <button class="yt-watch-btn" onclick="openVideoModal('${v.id}', '${safeTitle}')">▶ Watch Here</button>
-                      <a href="${v.url}" target="_blank" rel="noopener noreferrer" class="yt-link-btn" title="Open in YouTube">↗ YouTube</a>
-                    </div>
-                  </div>
-                </div>
-              `;
-            }).join('')}
-          </div>
-        `;
-        d.appendChild(ytBox);
-      }
+      const ytEl = buildYouTubeSourcesElement(item.youtube_sources);
+      if (ytEl) d.appendChild(ytEl);
 
       if (item.sources_used) {
         const src = document.createElement('div');
@@ -2548,6 +2749,9 @@ async function summarizeFile(filename) {
     btn.disabled = true;
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
+
   try {
     const res = await fetch(`${API_BASE}/summarize`, {
       method: 'POST',
@@ -2557,22 +2761,45 @@ async function summarizeFile(filename) {
         filename: targetFilename,
         text: clientText 
       }),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
     
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Failed to summarize');
     
-    if (textEl) textEl.textContent = data.summary;
+    if (textEl) renderFormattedMessage(textEl, data.summary);
     showToast('Summary generated successfully!');
   } catch (e) {
-    const isFetchErr = e.message && (
+    clearTimeout(timeoutId);
+    const isTimeout = e.name === 'AbortError' || (e.message && e.message.includes('aborted'));
+    const isFetchErr = isTimeout || (e.message && (
       e.message.includes('fetch') || 
       e.message.includes('NetworkError') || 
       e.message.includes('Failed to fetch') ||
       e.message.includes('Load failed')
-    );
+    ));
 
-    if (isFetchErr) {
+    if (isTimeout) {
+      if (textEl) {
+        textEl.innerHTML = `
+          <div style="padding: 14px; border-radius: 8px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); color: #fca5a5; line-height: 1.6; font-size: 13px;">
+            <div style="font-weight: 600; color: #ef4444; margin-bottom: 6px;">
+              ⏱️ Request Timed Out (45s)
+            </div>
+            <div>
+              The summarization request took longer than 45 seconds. This usually happens when the backend server is cold-starting on Render or the document is exceptionally large.
+            </div>
+            <div style="margin-top: 12px;">
+              <button class="summary-btn-action" style="background: #ef4444; color: #fff; border-color: #ef4444; font-weight: 600;" onclick="summarizeFile('${targetFilename}')">
+                🔄 Retry Now
+              </button>
+            </div>
+          </div>
+        `;
+      }
+      showToast('⏱️ Summarization timed out. Please click retry.');
+    } else if (isFetchErr) {
       if (textEl) {
         textEl.innerHTML = `
           <div style="padding: 14px; border-radius: 8px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); color: #fca5a5; line-height: 1.6; font-size: 13px;">

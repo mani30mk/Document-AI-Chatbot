@@ -21,11 +21,17 @@ __pycache__/
 .idea/
 
 # Vector Stores (if any created locally)
+# Vector Stores & Uploads
 chroma_db/
+uploaded_docs/
+friends_repo/
 
 # LaTeX build files
 *.aux
 *.log
 *.out
 *.toc
+
+# Test presentation files
+*.pptx
 
