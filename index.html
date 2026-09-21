@@ -2189,22 +2189,9 @@ function selectFile(i) {
   document.getElementById('contentTitle').textContent = f.name;
 
   document.getElementById('viewer').innerHTML = `
-    <div style="position: absolute; top: 20px; left: 20px; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 10px;">
-      <div style="display: flex; justify-content: flex-end; flex-shrink: 0;">
-        <button class="btn btn-primary" onclick="summarizeFile('${f.name}')" id="btnSummarize">✨ Summarize File</button>
-      </div>
+    <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column;">
       <div id="viewerContent" style="flex: 1; position: relative; overflow: hidden;">
         <div id="docViewerMount" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></div>
-      </div>
-      <div id="summaryOverlay" style="display: none; flex-direction: column; flex: 1; background: var(--surface); overflow-y: auto;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-shrink: 0;">
-          <h3 style="font-size: 16px;">File Summary</h3>
-          <button class="btn" onclick="toggleSummary(false)">Close Summary</button>
-        </div>
-        <div id="summaryText" style="line-height: 1.6; white-space: pre-wrap; font-size: 14px; margin-bottom: 20px; flex: 1; overflow-y: auto;"></div>
-        <div class="fp-info" style="font-size: 12px; border-top: 1px solid var(--border); padding-top: 12px; flex-shrink: 0;">
-          <strong>How this works:</strong> When you upload a document, our backend extracts all its text using LangChain loaders. When you click "Summarize", the full extracted text is retrieved and sent to the <strong>Gemini</strong> model in a single prompt. Thanks to Gemini's large context window, it can read the entire document at once and provide a cohesive, accurate summary.
-        </div>
       </div>
     </div>
   `;
