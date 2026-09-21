@@ -11,3 +11,5 @@ unstructured
 python-docx
 python-pptx
 chromadb
+supabase
+

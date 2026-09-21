@@ -33,6 +33,8 @@ from langchain_community.document_loaders import (
 )
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
+from langchain_community.vectorstores import SupabaseVectorStore
+from supabase.client import Client, create_client
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
@@ -57,13 +59,26 @@ def serve_index():
     return FileResponse("index.html")
 
 
-# ── Global state (per-session stores + chat histories) ──────────────────────
-# In production, swap these dicts for Redis / a proper session store.
+# ── Global state & Cloud storage setup ─────────────────────────────────────
+# In-memory session fallbacks
 session_vectorstores: dict[str, Chroma] = {}
 session_histories: dict[str, list] = {}
 session_files: dict[str, list[str]] = {}
 session_docs: dict[str, dict[str, str]] = {}
 session_api_keys: dict[str, str] = {}
+
+# Supabase (persistent cloud storage & pgvector)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
+supabase_client: Client | None = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("Connected to Supabase for persistent cloud storage & pgvector.")
+    except Exception as e:
+        print(f"Warning: Could not connect to Supabase: {e}")
+
 
 # ── Shared components ────────────────────────────────────────────────────────
 EMBEDDINGS = None
@@ -195,9 +210,11 @@ async def upload_files(
 
     for uf in files:
         ext = os.path.splitext(uf.filename)[1].lower()
+        file_bytes = await uf.read()
+
         # Write to a temp file so loaders can read it
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(await uf.read())
+            tmp.write(file_bytes)
             tmp_path = tmp.name
 
         try:
@@ -208,6 +225,17 @@ async def upload_files(
             # Store full text for summarization
             full_text = "\n\n".join(d.page_content for d in docs)
             session_docs.setdefault(session_id, {})[uf.filename] = full_text
+
+            # If Supabase is connected, store the raw file in Supabase Storage
+            if supabase_client:
+                try:
+                    supabase_client.storage.from_("documents").upload(
+                        path=f"{session_id}/{uf.filename}",
+                        file=file_bytes,
+                        file_options={"upsert": "true"},
+                    )
+                except Exception as s_err:
+                    print(f"Supabase storage upload note: {s_err}")
         except ValueError as e:
             return {"error": str(e), "skipped": uf.filename}
         finally:
@@ -217,6 +245,8 @@ async def upload_files(
         raise HTTPException(status_code=400, detail="No documents could be loaded.")
 
     chunks = TEXT_SPLITTER.split_documents(all_docs)
+    for c in chunks:
+        c.metadata["session_id"] = session_id
 
     try:
         embeddings = get_embeddings()
@@ -226,13 +256,28 @@ async def upload_files(
             detail=f"Embedding model could not be initialized: {exc}",
         ) from exc
 
-    # Add to existing vectorstore or create new one for this session
-    if session_id in session_vectorstores:
-        session_vectorstores[session_id].add_texts(
-            [c.page_content for c in chunks]
-        )
-    else:
-        session_vectorstores[session_id] = Chroma.from_documents(chunks, embeddings)
+    # Persist in Supabase pgvector if configured, otherwise use in-memory Chroma
+    stored_in_supabase = False
+    if supabase_client:
+        try:
+            supabase_vectorstore = SupabaseVectorStore(
+                client=supabase_client,
+                embedding=embeddings,
+                table_name="documents",
+                query_name="match_documents",
+            )
+            supabase_vectorstore.add_documents(chunks)
+            stored_in_supabase = True
+        except Exception as err:
+            print(f"Warning: Supabase vector store insert failed ({err}), falling back to Chroma.")
+
+    if not stored_in_supabase:
+        if session_id in session_vectorstores:
+            session_vectorstores[session_id].add_texts(
+                [c.page_content for c in chunks]
+            )
+        else:
+            session_vectorstores[session_id] = Chroma.from_documents(chunks, embeddings)
 
     session_files[session_id].extend(uploaded_names)
 
@@ -240,6 +285,7 @@ async def upload_files(
         "message": f"Uploaded {len(uploaded_names)} file(s), indexed {len(chunks)} chunks.",
         "files": session_files[session_id],
         "chunks": len(chunks),
+        "storage": "supabase" if stored_in_supabase else "in-memory",
     }
 
 
@@ -253,12 +299,6 @@ async def ask(req: AskRequest):
     if sid not in session_histories:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    if sid not in session_vectorstores:
-        raise HTTPException(
-            status_code=400,
-            detail="No files uploaded for this session yet. Upload files first via /upload/{session_id}.",
-        )
-
     api_key = req.gemini_api_key or session_api_keys.get(sid) or os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise HTTPException(
@@ -266,7 +306,29 @@ async def ask(req: AskRequest):
             detail="Gemini API key is required to query the model. Please provide your API key or set GEMINI_API_KEY.",
         )
 
-    retriever = session_vectorstores[sid].as_retriever(search_kwargs={"k": 4})
+    retriever = None
+    if supabase_client:
+        try:
+            supabase_vectorstore = SupabaseVectorStore(
+                client=supabase_client,
+                embedding=get_embeddings(),
+                table_name="documents",
+                query_name="match_documents",
+            )
+            retriever = supabase_vectorstore.as_retriever(
+                search_kwargs={"k": 4, "filter": {"session_id": sid}}
+            )
+        except Exception as err:
+            print(f"Supabase retriever error ({err}), falling back to in-memory.")
+
+    if retriever is None:
+        if sid not in session_vectorstores:
+            raise HTTPException(
+                status_code=400,
+                detail="No files uploaded for this session yet. Upload files first via /upload/{session_id}.",
+            )
+        retriever = session_vectorstores[sid].as_retriever(search_kwargs={"k": 4})
+
     llm = get_llm(api_key)
 
     # Build the chain with history

@@ -63,3 +63,52 @@ This project includes a ready-to-use [`render.yaml`](render.yaml) blueprint conf
    - **Instance Type**: `Free`
 4. Click **Deploy Web Service**.
 5. Once deployed, visit your Render URL (e.g. `https://your-app.onrender.com`). Both the frontend and backend are served from this single service!
+
+---
+
+## (Optional) Supabase Cloud Storage & Persistent Vectors 🗄️
+
+By default, the app runs in-memory. If you want documents and vectors to **persist permanently** in the cloud:
+
+1. Create a free project at [supabase.com](https://supabase.com).
+2. Go to **SQL Editor** and run:
+   ```sql
+   create extension if not exists vector;
+   create table if not exists documents (
+     id uuid primary key default gen_random_uuid(),
+     content text,
+     metadata jsonb,
+     embedding vector(384)
+   );
+   create or replace function match_documents (
+     query_embedding vector(384),
+     filter jsonb default '{}'::jsonb,
+     match_count int default 4
+   ) returns table (
+     id uuid,
+     content text,
+     metadata jsonb,
+     similarity float
+   )
+   language plpgsql
+   as $$
+   #variable_conflict use_column
+   begin
+     return query
+     select
+       id,
+       content,
+       metadata,
+       1 - (documents.embedding <=> query_embedding) as similarity
+     from documents
+     where metadata @> filter
+     order by documents.embedding <=> query_embedding
+     limit match_count;
+   end;
+   $$;
+   ```
+3. Under **Storage**, create a new public bucket named `documents`.
+4. In Render (or your `.env` locally), add the environment variables:
+   - `SUPABASE_URL`: Your Supabase Project URL
+   - `SUPABASE_KEY`: Your Supabase `service_role` (or `anon`) key
+
