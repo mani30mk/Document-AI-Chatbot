@@ -1313,9 +1313,25 @@
 
 <script>
 // ── Config ────────────────────────────────────────────────
-const API_BASE = (window.location.origin && window.location.origin.startsWith('http'))
-  ? window.location.origin
-  : 'http://localhost:8000';
+const RENDER_BACKEND = 'https://document-ai-chatbot-71ey.onrender.com';
+const LOCAL_BACKEND = 'http://localhost:8000';
+
+function getApiBase() {
+  const origin = window.location.origin;
+  if (origin && origin.startsWith('http')) {
+    const host = window.location.hostname;
+    if (host !== 'localhost' && host !== '127.0.0.1') {
+      return origin;
+    }
+    if (window.location.port === '8000') {
+      return origin;
+    }
+    return LOCAL_BACKEND;
+  }
+  return LOCAL_BACKEND;
+}
+
+let API_BASE = getApiBase();
 
 // ── State ─────────────────────────────────────────────────
 let sessionId = null;
@@ -2552,8 +2568,40 @@ async function summarizeFile(filename) {
     if (textEl) textEl.textContent = data.summary;
     showToast('Summary generated successfully!');
   } catch (e) {
-    if (textEl) textEl.textContent = 'Summarization notice: ' + e.message;
-    showToast('Summarization error: ' + e.message);
+    const isFetchErr = e.message && (
+      e.message.includes('fetch') || 
+      e.message.includes('NetworkError') || 
+      e.message.includes('Failed to fetch') ||
+      e.message.includes('Load failed')
+    );
+
+    if (isFetchErr) {
+      if (textEl) {
+        textEl.innerHTML = `
+          <div style="padding: 14px; border-radius: 8px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); color: #fca5a5; line-height: 1.6; font-size: 13px;">
+            <div style="font-weight: 600; color: #ef4444; margin-bottom: 6px;">
+              ⚠️ Backend Connection Notice
+            </div>
+            <div>
+              Could not reach backend API at <code>${API_BASE}</code>.
+            </div>
+            <div style="margin-top: 8px; font-size: 12px; color: #cbd5e1;">
+              • <strong>Render Cold Start:</strong> If deployed on Render, the server automatically spins down when inactive and takes ~30–60 seconds to wake up.<br/>
+              • <strong>Local Backend:</strong> If testing locally, make sure the local server is running on <code>http://localhost:8000</code>.
+            </div>
+            <div style="margin-top: 12px;">
+              <button class="summary-btn-action" style="background: #ef4444; color: #fff; border-color: #ef4444; font-weight: 600;" onclick="summarizeFile('${targetFilename}')">
+                🔄 Retry Now
+              </button>
+            </div>
+          </div>
+        `;
+      }
+      showToast('⚠️ Backend connection error. Please wait a moment and retry.');
+    } else {
+      if (textEl) textEl.textContent = 'Summarization notice: ' + e.message;
+      showToast('Summarization error: ' + e.message);
+    }
   } finally {
     if (btn) {
       btn.textContent = '🔄 Regenerate';
