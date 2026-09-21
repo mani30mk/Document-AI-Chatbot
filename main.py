@@ -389,6 +389,7 @@ class AskRequest(BaseModel):
 class SummarizeRequest(BaseModel):
     session_id: str
     filename: str
+    text: str | None = None
 
 
 class YouTubeVideo(BaseModel):
@@ -775,22 +776,112 @@ async def ask(req: AskRequest):
     )
 
 
+def normalize_doc_name(name: str) -> str:
+    """Normalize filename for fuzzy matching (case, hyphens, underscores, spaces)."""
+    return re.sub(r"[\s\-_]+", "", name.lower())
+
+
 @app.post("/summarize")
 async def summarize(req: SummarizeRequest):
-    """Summarize a specific uploaded file."""
+    """Summarize a specific uploaded file with multi-tier fallback."""
     sid = req.session_id
     fname = req.filename
+    text = (req.text or "").strip()
 
-    if sid not in session_docs or fname not in session_docs[sid]:
-        raise HTTPException(status_code=404, detail="File not found in session.")
+    # Tier 1: Client provided extracted text directly
+    if not text:
+        # Tier 2: Exact match in session_docs
+        if sid in session_docs and fname in session_docs[sid]:
+            text = session_docs[sid][fname]
 
-    try:
-        llm = get_llm()
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    if not text:
+        # Tier 3: Normalized filename match in session_docs[sid]
+        target_norm = normalize_doc_name(fname)
+        if sid in session_docs:
+            for k, doc_text in session_docs[sid].items():
+                if normalize_doc_name(k) == target_norm:
+                    text = doc_text
+                    break
 
-    text = session_docs[sid][fname]
-    
+    if not text:
+        # Tier 4: Search across all sessions in session_docs
+        target_norm = normalize_doc_name(fname)
+        for s_id, doc_dict in session_docs.items():
+            for k, doc_text in doc_dict.items():
+                if normalize_doc_name(k) == target_norm:
+                    text = doc_text
+                    break
+            if text:
+                break
+
+    if not text:
+        # Tier 5: Check disk in UPLOAD_DIR for the file
+        target_norm = normalize_doc_name(fname)
+        found_file = None
+        # Check session dir first
+        session_dir = os.path.join(UPLOAD_DIR, sid)
+        if os.path.isdir(session_dir):
+            for disk_file in os.listdir(session_dir):
+                if disk_file == fname or normalize_doc_name(disk_file) == target_norm:
+                    found_file = os.path.join(session_dir, disk_file)
+                    break
+
+        # Check entire UPLOAD_DIR recursively if not found in session dir
+        if not found_file and os.path.isdir(UPLOAD_DIR):
+            for root, _, disk_files in os.walk(UPLOAD_DIR):
+                for disk_file in disk_files:
+                    if disk_file == fname or normalize_doc_name(disk_file) == target_norm:
+                        found_file = os.path.join(root, disk_file)
+                        break
+                if found_file:
+                    break
+
+        if found_file:
+            try:
+                ext = os.path.splitext(found_file)[1].lower()
+                docs, _ = load_file(found_file, ext)
+                if docs:
+                    text = "\n\n".join(d.page_content for d in docs)
+                    session_docs.setdefault(sid, {})[fname] = text
+            except Exception as load_err:
+                print(f"Notice: Could not load file from disk for summarize ({load_err})")
+
+    if not text:
+        # Tier 6: Single document fallback in session
+        if sid in session_docs and len(session_docs[sid]) == 1:
+            text = list(session_docs[sid].values())[0]
+
+    if not text:
+        # Tier 7: Check slides if PPT
+        if sid in session_slides:
+            slides_data = session_slides[sid].get(fname)
+            if not slides_data:
+                target_norm = normalize_doc_name(fname)
+                for k, s_list in session_slides[sid].items():
+                    if normalize_doc_name(k) == target_norm:
+                        slides_data = s_list
+                        break
+            if slides_data:
+                slide_parts = []
+                for s in slides_data:
+                    title = s.get("title", "")
+                    raw = s.get("raw_text", "")
+                    bullets = s.get("bullets", [])
+                    bullet_text = "\n".join(
+                        b if isinstance(b, str) else b.get("text", "") for b in bullets
+                    )
+                    part = f"Slide {s.get('slide_number', '')}: {title}\n{raw}\n{bullet_text}".strip()
+                    if part:
+                        slide_parts.append(part)
+                if slide_parts:
+                    text = "\n\n".join(slide_parts)
+
+    if not text:
+        raise HTTPException(
+            status_code=404,
+            detail=f"File '{fname}' not found in session and no text could be extracted.",
+        )
+
     prompt = ChatPromptTemplate.from_template(
         "You are an expert summarizer. Please provide a comprehensive and concise summary of the following document:\n\n{text}"
     )
@@ -803,7 +894,7 @@ async def summarize(req: SummarizeRequest):
         try:
             curr_llm = get_llm(m_name)
             chain = prompt | curr_llm | StrOutputParser()
-            summary = chain.invoke({"text": text})
+            summary = chain.invoke({"text": text[:20000]})
             if summary:
                 break
         except Exception as e:
@@ -815,6 +906,7 @@ async def summarize(req: SummarizeRequest):
         raise HTTPException(status_code=500, detail=f"AI model error: {str(last_error)}")
 
     return {"summary": summary}
+
 
 
 @app.delete("/session/{session_id}/history")

@@ -675,6 +675,48 @@
     align-items: center;
     gap: 8px;
   }
+  .chat-history-badge {
+    font-size: 11px;
+    color: #94a3b8;
+    background: transparent;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .chat-clear-btn {
+    background: transparent !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    color: #94a3b8 !important;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 3px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+  .chat-clear-btn:hover {
+    color: #f8fafc !important;
+    border-color: rgba(255, 255, 255, 0.25) !important;
+    background: rgba(255, 255, 255, 0.05) !important;
+  }
+  .clear-btn {
+    background: transparent !important;
+    border: 1px solid var(--border) !important;
+    color: var(--muted) !important;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 3px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .clear-btn:hover {
+    color: var(--text) !important;
+    border-color: var(--accent) !important;
+  }
   .chat-close-btn {
     background: transparent;
     border: none;
@@ -1197,8 +1239,10 @@
       <button class="chat-tab-pill active" id="tabChatPill" onclick="switchChatPanelTab('chat')">AI Chat</button>
     </div>
     <div class="chat-header-actions">
-      <span class="chat-history-badge" id="historyBadge">0 turns</span>
-      <button class="clear-btn" onclick="clearHistory()" title="Clear conversation">✕ Clear</button>
+      <div id="chatSpecificActions" style="display: flex; align-items: center; gap: 8px;">
+        <span class="chat-history-badge" id="historyBadge">0 turns</span>
+        <button class="chat-clear-btn" onclick="clearHistory()" title="Clear conversation">✕ Clear</button>
+      </div>
       <button class="chat-close-btn" onclick="toggleChat()" title="Close chat">✕</button>
     </div>
   </div>
@@ -2308,12 +2352,14 @@ function switchChatPanelTab(tab) {
   const summaryView = document.getElementById('summaryViewContainer');
   const tabChat = document.getElementById('tabChatPill');
   const tabSummary = document.getElementById('tabSummaryPill');
+  const chatActions = document.getElementById('chatSpecificActions');
 
   if (tab === 'chat') {
     if (chatView) chatView.style.display = 'flex';
     if (summaryView) summaryView.style.display = 'none';
     if (tabChat) tabChat.classList.add('active');
     if (tabSummary) tabSummary.classList.remove('active');
+    if (chatActions) chatActions.style.display = 'flex';
     const input = document.getElementById('chatInput');
     if (input) input.focus();
   } else {
@@ -2321,6 +2367,7 @@ function switchChatPanelTab(tab) {
     if (summaryView) summaryView.style.display = 'flex';
     if (tabChat) tabChat.classList.remove('active');
     if (tabSummary) tabSummary.classList.add('active');
+    if (chatActions) chatActions.style.display = 'none';
     
     // If summary not loaded for current file, generate it
     const docName = getActiveDocName();
@@ -2462,12 +2509,22 @@ async function summarizeFile(filename) {
     }
   }
 
+  // Find file object from files array with fuzzy matching
+  const targetNorm = filename ? filename.toLowerCase().replace(/[\s\-_]+/g, '') : '';
+  const f = files.find(file => 
+    file.name === filename || 
+    (file.name && file.name.toLowerCase().replace(/[\s\-_]+/g, '') === targetNorm)
+  ) || (activeIdx !== null ? files[activeIdx] : null) || (files.length > 0 ? files[0] : null);
+
+  const targetFilename = f ? f.name : filename;
+  const clientText = f ? f.text : null;
+
   // Open the panel and switch to Summary tab
   if (!chatOpen) toggleChat();
   switchChatPanelTab('summary');
 
   const titleEl = document.getElementById('summaryDocTitle');
-  if (titleEl) titleEl.textContent = `✨ Summary of ${filename}`;
+  if (titleEl) titleEl.textContent = `✨ Summary of ${targetFilename}`;
 
   const textEl = document.getElementById('summaryPanelText');
   if (textEl) textEl.textContent = '⏳ Analyzing document and generating grounded summary with Gemini…';
@@ -2482,7 +2539,11 @@ async function summarizeFile(filename) {
     const res = await fetch(`${API_BASE}/summarize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, filename: filename }),
+      body: JSON.stringify({ 
+        session_id: sessionId, 
+        filename: targetFilename,
+        text: clientText 
+      }),
     });
     
     const data = await res.json();
