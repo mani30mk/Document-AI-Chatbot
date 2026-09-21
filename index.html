@@ -330,6 +330,47 @@
     background: var(--surface2);
     font-weight: 600;
   }
+  .ppt-images-container {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    align-items: center;
+    justify-content: center;
+  }
+  .ppt-img-wrapper {
+    position: relative;
+    max-width: 48%;
+    max-height: 220px;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    background: var(--surface2);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .ppt-img-wrapper:hover {
+    transform: scale(1.02);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  }
+  .ppt-slide-img {
+    width: 100%;
+    height: 100%;
+    max-height: 210px;
+    object-fit: contain;
+    display: block;
+  }
+  .ppt-img-zoom-hint {
+    position: absolute;
+    bottom: 6px;
+    right: 6px;
+    background: rgba(0,0,0,0.65);
+    color: #fff;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
   .ppt-notes-drawer {
     margin-top: 10px;
     padding: 8px 12px;
@@ -453,6 +494,218 @@
   .send-btn:hover { background: var(--accent-h); }
   .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+  .new-session-btn {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-bg);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 3px 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .new-session-btn:hover {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  /* ── YouTube Video Cards in Chat ───────────────────────── */
+  .yt-sources-box {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(0,0,0,0.08);
+  }
+  .yt-sources-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .yt-cards-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .yt-card {
+    display: flex;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 8px;
+    transition: all 0.15s ease;
+  }
+  .yt-card:hover {
+    border-color: var(--accent);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+  .yt-thumb-wrap {
+    position: relative;
+    width: 86px;
+    height: 52px;
+    flex-shrink: 0;
+    border-radius: 5px;
+    overflow: hidden;
+    cursor: pointer;
+    background: #000;
+  }
+  .yt-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .yt-duration {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    background: rgba(0,0,0,0.8);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+  .yt-play-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.65);
+    color: #fff;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.85;
+    transition: transform 0.15s ease;
+  }
+  .yt-thumb-wrap:hover .yt-play-overlay {
+    transform: translate(-50%, -50%) scale(1.15);
+    background: var(--accent);
+  }
+  .yt-card-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .yt-card-title {
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .yt-card-channel {
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .yt-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 3px;
+  }
+  .yt-watch-btn {
+    font-size: 10px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: none;
+    border-radius: 4px;
+    padding: 2px 7px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .yt-watch-btn:hover {
+    background: var(--accent-h);
+  }
+  .yt-link-btn {
+    font-size: 10px;
+    color: var(--muted);
+    text-decoration: none;
+    padding: 2px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    transition: all 0.15s ease;
+  }
+  .yt-link-btn:hover {
+    color: var(--text);
+    border-color: var(--muted);
+  }
+
+  /* ── Media Modals (Image zoom & YouTube player) ────────── */
+  .media-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 500;
+    padding: 20px;
+  }
+  .media-modal.hidden {
+    display: none;
+  }
+  .media-modal-card {
+    background: var(--surface);
+    border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+    max-width: 840px;
+    width: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    border: 1px solid var(--border);
+  }
+  .media-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+    background: var(--surface);
+  }
+  .media-modal-body {
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+  }
+  .media-modal-body img {
+    max-width: 100%;
+    max-height: 75vh;
+    object-fit: contain;
+    display: block;
+  }
+  .media-modal-body iframe {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border: none;
+    display: block;
+  }
+
   /* ── Toast ────────────────────────────────────────────── */
   .toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); font-size: 12px; padding: 8px 16px; border-radius: 20px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 200; white-space: nowrap; }
   .toast.show { opacity: 1; }
@@ -472,7 +725,10 @@
 <div class="layout">
   <!-- Sidebar -->
   <aside class="sidebar">
-    <div class="sidebar-head">Study files</div>
+    <div class="sidebar-head" style="display:flex; justify-content:space-between; align-items:center;">
+      <span>Study files</span>
+      <button class="new-session-btn" onclick="startNewSession()" title="Start a fresh session">+ New Session</button>
+    </div>
     <label class="upload-zone" id="uploadZone">
       <input type="file" id="fileInput" multiple accept=".pdf,.txt,.docx,.pptx" />
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -535,6 +791,32 @@
   </div>
 </div>
 
+<!-- Image Zoom Modal -->
+<div class="media-modal hidden" id="imageModal" onclick="closeImageModal()">
+  <div class="media-modal-card" onclick="event.stopPropagation()">
+    <div class="media-modal-header">
+      <span id="imageModalTitle">Diagram Preview</span>
+      <button class="clear-btn" onclick="closeImageModal()">✕ Close</button>
+    </div>
+    <div class="media-modal-body">
+      <img id="imageModalImg" src="" alt="Zoomed Diagram" />
+    </div>
+  </div>
+</div>
+
+<!-- YouTube Video Player Modal -->
+<div class="media-modal hidden" id="videoModal" onclick="closeVideoModal()">
+  <div class="media-modal-card" onclick="event.stopPropagation()">
+    <div class="media-modal-header">
+      <span id="videoModalTitle">🎥 Video Tutorial</span>
+      <button class="clear-btn" onclick="closeVideoModal()">✕ Close</button>
+    </div>
+    <div class="media-modal-body">
+      <iframe id="videoModalIframe" src="" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -551,19 +833,123 @@ let files = [];   // { name, size, ext }
 let activeIdx = null;
 let isSending = false;
 
-// ── Session init ──────────────────────────────────────────
+// ── Session init & Persistence ────────────────────────────
 async function initSession() {
+  const savedSid = localStorage.getItem('study_rag_session_id');
+  if (savedSid) {
+    try {
+      const res = await fetch(`${API_BASE}/session/${savedSid}`);
+      if (res.ok) {
+        const data = await res.json();
+        sessionId = data.session_id;
+        setStatus(true);
+
+        // Restore files
+        files = (data.files || []).map(name => ({
+          name,
+          size: 0,
+          ext: name.split('.').pop().toLowerCase(),
+          slides: (data.slides && data.slides[name]) ? data.slides[name] : null,
+          text: (data.docs && data.docs[name]) ? data.docs[name] : null,
+        }));
+        renderFileList();
+        document.getElementById('fileCountTag').textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
+
+        // Restore chat messages
+        if (data.history && data.history.length > 0) {
+          const msgsContainer = document.getElementById('chatMessages');
+          msgsContainer.innerHTML = '';
+          turnCount = 0;
+          data.history.forEach(turn => {
+            addBubble(turn.content, turn.role);
+            if (turn.role === 'user') turnCount++;
+          });
+          document.getElementById('historyBadge').textContent = turnCount + ' turn' + (turnCount !== 1 ? 's' : '');
+        }
+
+        // Auto select first file if available
+        if (files.length > 0) {
+          selectFile(0);
+        }
+        return;
+      }
+    } catch (e) {
+      console.warn('Could not restore previous session:', e);
+    }
+  }
+
+  // Create brand new session
   try {
     const res = await fetch(`${API_BASE}/session/new`, { method: 'POST' });
     if (!res.ok) throw new Error();
     const data = await res.json();
     sessionId = data.session_id;
+    localStorage.setItem('study_rag_session_id', sessionId);
     setStatus(true);
   } catch {
     setStatus(false);
     showToast('Cannot reach backend. Is the server running?');
   }
 }
+
+async function startNewSession() {
+  if (files.length > 0 || turnCount > 0) {
+    if (!confirm('Start a new study session? This will clear current session files and chat history.')) return;
+  }
+  localStorage.removeItem('study_rag_session_id');
+  files = [];
+  activeIdx = null;
+  currentPptSlides = [];
+  renderFileList();
+  document.getElementById('viewer').innerHTML = '<div class="viewer-empty"><p>Upload files and click one to preview it</p></div>';
+  document.getElementById('contentTitle').textContent = 'Select a file to preview';
+  document.getElementById('fileCountTag').textContent = '0 files';
+  document.getElementById('chatMessages').innerHTML = '<div class="bubble bot">Hi! Upload your study files on the left, then ask me anything about them.</div>';
+  turnCount = 0;
+  document.getElementById('historyBadge').textContent = '0 turns';
+  await initSession();
+  showToast('Started fresh session');
+}
+
+// ── Media Modals (Diagram Zoom & Video Player) ─────────────
+function openImageModal(src, title) {
+  const modal = document.getElementById('imageModal');
+  const img = document.getElementById('imageModalImg');
+  const titleEl = document.getElementById('imageModalTitle');
+  if (img) img.src = src;
+  if (titleEl) titleEl.textContent = title || 'Diagram Preview';
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeImageModal() {
+  const modal = document.getElementById('imageModal');
+  const img = document.getElementById('imageModalImg');
+  if (modal) modal.classList.add('hidden');
+  if (img) img.src = '';
+}
+
+function openVideoModal(videoId, title) {
+  const modal = document.getElementById('videoModal');
+  const iframe = document.getElementById('videoModalIframe');
+  const titleEl = document.getElementById('videoModalTitle');
+  if (iframe) iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1`;
+  if (titleEl) titleEl.textContent = `🎥 ${title || 'Video Tutorial'}`;
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeVideoModal() {
+  const modal = document.getElementById('videoModal');
+  const iframe = document.getElementById('videoModalIframe');
+  if (modal) modal.classList.add('hidden');
+  if (iframe) iframe.src = '';
+}
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeImageModal();
+    closeVideoModal();
+  }
+});
 
 // Auto-initialize session on load
 window.addEventListener('DOMContentLoaded', initSession);
@@ -784,7 +1170,21 @@ function renderPptSlide(idx) {
       });
     }
 
-    // Fallback to raw text if no bullets or tables
+    // Render images / diagrams if present
+    if (s.images && s.images.length > 0) {
+      bodyContent += `
+        <div class="ppt-images-container">
+          ${s.images.map((img, imgIdx) => `
+            <div class="ppt-img-wrapper" onclick="openImageModal('${img}', 'Slide ${s.slide_number} - Diagram ${imgIdx + 1}')" title="Click to zoom diagram">
+              <img src="${img}" alt="Slide ${s.slide_number} Figure ${imgIdx + 1}" class="ppt-slide-img" />
+              <div class="ppt-img-zoom-hint">🔍 Zoom</div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    // Fallback to raw text if no bullets, tables, or images
     if (!bodyContent && s.raw_text) {
       bodyContent = `<div style="white-space: pre-wrap; line-height: 1.6;">${s.raw_text}</div>`;
     }
@@ -1096,6 +1496,39 @@ async function sendMessage() {
     } else {
       typingBubble.textContent = data.answer;
       typingBubble.classList.remove('typing');
+
+      // YouTube Video Tutorials recommendation
+      if (data.youtube_sources && data.youtube_sources.length > 0) {
+        const ytBox = document.createElement('div');
+        ytBox.className = 'yt-sources-box';
+        ytBox.innerHTML = `
+          <div class="yt-sources-title">🎥 Recommended Video Tutorials:</div>
+          <div class="yt-cards-container">
+            ${data.youtube_sources.map(v => {
+              const safeTitle = (v.title || '').replace(/'/g, "\\'");
+              return `
+                <div class="yt-card">
+                  <div class="yt-thumb-wrap" onclick="openVideoModal('${v.id}', '${safeTitle}')" title="Play tutorial">
+                    <img src="${v.thumbnail}" class="yt-thumb" alt="${v.title}" />
+                    ${v.duration ? `<span class="yt-duration">${v.duration}</span>` : ''}
+                    <div class="yt-play-overlay">▶</div>
+                  </div>
+                  <div class="yt-card-body">
+                    <div class="yt-card-title" title="${v.title}">${v.title}</div>
+                    <div class="yt-card-channel">${v.channel}</div>
+                    <div class="yt-card-actions">
+                      <button class="yt-watch-btn" onclick="openVideoModal('${v.id}', '${safeTitle}')">▶ Watch Here</button>
+                      <a href="${v.url}" target="_blank" rel="noopener noreferrer" class="yt-link-btn" title="Open in YouTube">↗ YouTube</a>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `;
+        typingBubble.appendChild(ytBox);
+      }
+
       // Sources tag
       const src = document.createElement('div');
       src.className = 'sources-tag';

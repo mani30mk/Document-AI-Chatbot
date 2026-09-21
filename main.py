@@ -39,6 +39,13 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage, AIMessage
 
 import tempfile
+import base64
+import io
+from PIL import Image
+import urllib.request
+import urllib.parse
+import re
+import json
 
 # ── App setup ───────────────────────────────────────────────────────────────
 app = FastAPI(title="RAG Study Assistant API")
@@ -124,6 +131,19 @@ def load_docx(path: str) -> list[Document]:
     return [Document(page_content="\n\n".join(text_parts), metadata={"source": path})]
 
 
+def extract_shape_images(shape):
+    imgs = []
+    try:
+        if hasattr(shape, "image"):
+            imgs.append(shape.image)
+        elif getattr(shape, "shape_type", None) == 6 and hasattr(shape, "shapes"):  # Group shape
+            for sub_shape in shape.shapes:
+                imgs.extend(extract_shape_images(sub_shape))
+    except Exception:
+        pass
+    return imgs
+
+
 def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
     prs = Presentation(path)
     docs = []
@@ -133,6 +153,7 @@ def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
         title = ""
         bullets = []
         tables = []
+        images = []
 
         # Check title shape first
         try:
@@ -167,6 +188,26 @@ def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
                             slide_texts.append(row_text)
                     if table_rows:
                         tables.append(table_rows)
+
+                # Extract pictures/images
+                shape_imgs = extract_shape_images(shape)
+                for img in shape_imgs:
+                    if len(images) >= 4:  # Cap at 4 images per slide
+                        break
+                    try:
+                        pil_img = Image.open(io.BytesIO(img.blob))
+                        if pil_img.width > 900:
+                            ratio = 900 / pil_img.width
+                            new_size = (900, int(pil_img.height * ratio))
+                            pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
+                        buf = io.BytesIO()
+                        pil_format = "PNG" if pil_img.mode in ("RGBA", "P") else "JPEG"
+                        pil_img.save(buf, format=pil_format, quality=85)
+                        b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
+                        mime = f"image/{pil_format.lower()}"
+                        images.append(f"data:{mime};base64,{b64_str}")
+                    except Exception as img_err:
+                        print(f"Notice: Image extraction ({img_err})")
             except Exception:
                 continue
 
@@ -188,15 +229,17 @@ def load_pptx(path: str) -> tuple[list[Document], list[dict]]:
             "title": title,
             "bullets": bullets,
             "tables": tables,
+            "images": images,
             "notes": notes,
             "raw_text": "\n".join(slide_texts),
         })
 
-        content_for_doc = "\n".join(slide_texts) if slide_texts else f"Slide {slide_idx + 1}: {title}"
+        img_context = f" [Slide contains {len(images)} figure(s)/diagram(s)]" if images else ""
+        content_for_doc = ("\n".join(slide_texts) if slide_texts else f"Slide {slide_idx + 1}: {title}") + img_context
         docs.append(
             Document(
                 page_content=content_for_doc,
-                metadata={"slide": slide_idx + 1, "source": path},
+                metadata={"slide": slide_idx + 1, "source": path, "has_images": len(images) > 0},
             )
         )
     return docs, slides_data
@@ -248,15 +291,72 @@ class SummarizeRequest(BaseModel):
     filename: str
 
 
+class YouTubeVideo(BaseModel):
+    id: str
+    title: str
+    channel: str
+    duration: str
+    url: str
+    thumbnail: str
+
+
 class AskResponse(BaseModel):
     answer: str
     session_id: str
     sources_used: int
+    youtube_sources: List[YouTubeVideo] = []
 
 
 class SessionResponse(BaseModel):
     session_id: str
     files: List[str]
+
+
+def search_youtube(query: str, max_results: int = 3) -> list[dict]:
+    """Search YouTube for educational tutorials matching the query without API key."""
+    try:
+        clean_query = query.strip()
+        url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(clean_query + " tutorial")
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+            },
+        )
+        with urllib.request.urlopen(req, timeout=4) as response:
+            html = response.read().decode("utf-8")
+            match = re.search(r"var ytInitialData = ({.*?});</script>", html)
+            if not match:
+                return []
+            data = json.loads(match.group(1))
+            contents = data["contents"]["twoColumnSearchResultsRenderer"]["primaryContents"]["sectionListRenderer"]["contents"]
+            videos = []
+            for section in contents:
+                items = section.get("itemSectionRenderer", {}).get("contents", [])
+                for item in items:
+                    v = item.get("videoRenderer")
+                    if v and "videoId" in v:
+                        vid_id = v.get("videoId")
+                        title = v.get("title", {}).get("runs", [{}])[0].get("text", "")
+                        channel = v.get("ownerText", {}).get("runs", [{}])[0].get("text", "")
+                        duration = v.get("lengthText", {}).get("simpleText", "")
+                        if vid_id and title:
+                            videos.append({
+                                "id": vid_id,
+                                "title": title,
+                                "channel": channel,
+                                "duration": duration,
+                                "url": f"https://www.youtube.com/watch?v={vid_id}",
+                                "thumbnail": f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg",
+                            })
+                            if len(videos) >= max_results:
+                                break
+                if len(videos) >= max_results:
+                    break
+            return videos
+    except Exception as e:
+        print(f"YouTube search notice: {e}")
+        return []
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -269,6 +369,26 @@ def new_session():
     session_files[sid] = []
     session_docs[sid] = {}
     return SessionResponse(session_id=sid, files=[])
+
+
+@app.get("/session/{session_id}")
+def get_session_state(session_id: str):
+    """Retrieve full session state (files, slides, docs, chat history) for page reload."""
+    if session_id not in session_histories:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    
+    history_list = []
+    for msg in session_histories.get(session_id, []):
+        role = "user" if isinstance(msg, HumanMessage) else "bot"
+        history_list.append({"role": role, "content": msg.content})
+
+    return {
+        "session_id": session_id,
+        "files": session_files.get(session_id, []),
+        "slides": session_slides.get(session_id, {}),
+        "docs": session_docs.get(session_id, {}),
+        "history": history_list,
+    }
 
 
 import threading
@@ -474,10 +594,13 @@ async def ask(req: AskRequest):
     if len(session_histories[sid]) > 20:
         session_histories[sid] = session_histories[sid][-20:]
 
+    yt_results = search_youtube(req.question, max_results=3)
+
     return AskResponse(
         answer=answer,
         session_id=sid,
         sources_used=len(retrieved_docs),
+        youtube_sources=[YouTubeVideo(**v) for v in yt_results],
     )
 
 
