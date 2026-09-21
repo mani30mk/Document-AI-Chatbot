@@ -23,7 +23,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # ── LangChain imports ───────────────────────────────────────────────────────
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_community.document_loaders import (
     PyPDFLoader,
     UnstructuredWordDocumentLoader,
@@ -65,6 +66,9 @@ session_docs: dict[str, dict[str, str]] = {}
 session_api_keys: dict[str, str] = {}
 
 # ── Shared components ────────────────────────────────────────────────────────
+EMBEDDINGS = None
+EMBEDDINGS_ERROR = None
+
 TEXT_SPLITTER = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
 
 RAG_PROMPT = ChatPromptTemplate.from_messages([
@@ -81,10 +85,13 @@ Context:
 ])
 
 
-def get_llm(api_key: str) -> ChatGoogleGenerativeAI:
+def get_llm(api_key: str | None = None) -> ChatGoogleGenerativeAI:
+    key = api_key or os.getenv("GEMINI_API_KEY")
+    if not key:
+        raise ValueError("Google Gemini API key is required. Provide it in the request or set GEMINI_API_KEY.")
     return ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
-        google_api_key=api_key,
+        google_api_key=key,
         temperature=0.2,
     )
 
@@ -106,14 +113,22 @@ def format_docs(docs):
     return "\n\n".join(d.page_content for d in docs)
 
 
-def get_embeddings(api_key: str | None = None) -> GoogleGenerativeAIEmbeddings:
-    key = api_key or os.getenv("GEMINI_API_KEY")
-    if not key:
-        raise ValueError("Google Gemini API key is required for embeddings. Provide it in the request or set GEMINI_API_KEY.")
-    return GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
-        google_api_key=key,
-    )
+def get_embeddings() -> FastEmbedEmbeddings:
+    global EMBEDDINGS, EMBEDDINGS_ERROR
+
+    if EMBEDDINGS is not None:
+        return EMBEDDINGS
+
+    if EMBEDDINGS_ERROR is not None:
+        raise EMBEDDINGS_ERROR
+
+    try:
+        # BAAI/bge-small-en-v1.5 runs locally via ONNX Runtime (~120MB RAM, 0 API tokens used)
+        EMBEDDINGS = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+        return EMBEDDINGS
+    except Exception as exc:
+        EMBEDDINGS_ERROR = exc
+        raise
 
 
 # ── Request / Response models ────────────────────────────────────────────────
@@ -124,13 +139,13 @@ class NewSessionRequest(BaseModel):
 class AskRequest(BaseModel):
     session_id: str
     question: str
-    gemini_api_key: str
+    gemini_api_key: str | None = None
 
 
 class SummarizeRequest(BaseModel):
     session_id: str
     filename: str
-    gemini_api_key: str
+    gemini_api_key: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -204,7 +219,7 @@ async def upload_files(
     chunks = TEXT_SPLITTER.split_documents(all_docs)
 
     try:
-        embeddings = get_embeddings(api_key)
+        embeddings = get_embeddings()
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -244,8 +259,15 @@ async def ask(req: AskRequest):
             detail="No files uploaded for this session yet. Upload files first via /upload/{session_id}.",
         )
 
+    api_key = req.gemini_api_key or session_api_keys.get(sid) or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Gemini API key is required to query the model. Please provide your API key or set GEMINI_API_KEY.",
+        )
+
     retriever = session_vectorstores[sid].as_retriever(search_kwargs={"k": 4})
-    llm = get_llm(req.gemini_api_key)
+    llm = get_llm(api_key)
 
     # Build the chain with history
     history = session_histories[sid]
@@ -285,8 +307,15 @@ async def summarize(req: SummarizeRequest):
     if sid not in session_docs or fname not in session_docs[sid]:
         raise HTTPException(status_code=404, detail="File not found in session.")
 
+    api_key = req.gemini_api_key or session_api_keys.get(sid) or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Gemini API key is required to summarize. Please provide your API key or set GEMINI_API_KEY.",
+        )
+
     text = session_docs[sid][fname]
-    llm = get_llm(req.gemini_api_key)
+    llm = get_llm(api_key)
     
     prompt = ChatPromptTemplate.from_template(
         "You are an expert summarizer. Please provide a comprehensive and concise summary of the following document:\n\n{text}"

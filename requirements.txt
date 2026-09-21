@@ -5,6 +5,7 @@ langchain
 langchain-community
 langchain-chroma
 langchain-google-genai
+fastembed
 pypdf
 unstructured
 python-docx

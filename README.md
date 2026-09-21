@@ -11,7 +11,8 @@ A full-stack Retrieval-Augmented Generation (RAG) application that allows you to
 ## Tech Stack 🛠️
 - **Backend**: Python, FastAPI, LangChain
 - **Vector Database**: ChromaDB
-- **LLMs & Embeddings**: Google Gemini (`gemini-2.5-flash`), Google Gemini Embeddings (`models/text-embedding-004`)
+- **Embeddings**: FastEmbed (`BAAI/bge-small-en-v1.5` — 100% local ONNX runtime, **0 API tokens used**, ~120 MB RAM)
+- **LLM**: Google Gemini (`gemini-2.5-flash`)
 - **Frontend**: Vanilla HTML, CSS (Custom Design System), JavaScript
 
 ## How to Run Locally 🚀
