@@ -973,6 +973,59 @@
     color: #64748b;
     line-height: 1.5;
   }
+  /* Summary Loading Experience */
+  .summary-loading-card {
+    padding: 28px 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 12px;
+    background: rgba(15, 23, 42, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 12px;
+    margin: 8px 0;
+  }
+  .summary-spinner-ring {
+    width: 34px;
+    height: 34px;
+    border: 3px solid rgba(99, 102, 241, 0.2);
+    border-top-color: #6366f1;
+    border-radius: 50%;
+    animation: summary-spin 0.85s cubic-bezier(0.55, 0.15, 0.45, 0.85) infinite;
+  }
+  @keyframes summary-spin {
+    to { transform: rotate(360deg); }
+  }
+  .summary-loading-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #f8fafc;
+  }
+  .summary-loading-sub {
+    font-size: 12px;
+    color: #94a3b8;
+    max-width: 320px;
+    line-height: 1.5;
+  }
+  .summary-shimmer-container {
+    width: 100%;
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .summary-shimmer-line {
+    height: 9px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.03) 75%);
+    background-size: 200% 100%;
+    animation: summary-shimmer 1.8s infinite;
+  }
+  @keyframes summary-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
 
   /* Bottom Input Pill */
   .chat-input-pill-container {
@@ -2793,7 +2846,21 @@ async function summarizeFile(filename) {
   if (titleEl) titleEl.textContent = `✨ Summary of ${targetFilename}`;
 
   const textEl = document.getElementById('summaryPanelText');
-  if (textEl) textEl.textContent = '⏳ Analyzing document and generating grounded summary with Gemini…';
+  if (textEl) {
+    textEl.innerHTML = `
+      <div class="summary-loading-card">
+        <div class="summary-spinner-ring"></div>
+        <div class="summary-loading-title">Generating Executive Summary</div>
+        <div class="summary-loading-sub">Analyzing document text & synthesizing key insights with Gemini AI…</div>
+        <div class="summary-shimmer-container">
+          <div class="summary-shimmer-line" style="width: 90%;"></div>
+          <div class="summary-shimmer-line" style="width: 75%;"></div>
+          <div class="summary-shimmer-line" style="width: 85%;"></div>
+          <div class="summary-shimmer-line" style="width: 65%;"></div>
+        </div>
+      </div>
+    `;
+  }
 
   const btn = document.getElementById('btnRefreshSummary');
   if (btn) {
@@ -2824,60 +2891,21 @@ async function summarizeFile(filename) {
     showToast('Summary generated successfully!');
   } catch (e) {
     clearTimeout(timeoutId);
-    const isTimeout = e.name === 'AbortError' || (e.message && e.message.includes('aborted'));
-    const isFetchErr = isTimeout || (e.message && (
-      e.message.includes('fetch') || 
-      e.message.includes('NetworkError') || 
-      e.message.includes('Failed to fetch') ||
-      e.message.includes('Load failed')
-    ));
-
-    if (isTimeout) {
-      if (textEl) {
-        textEl.innerHTML = `
-          <div style="padding: 14px; border-radius: 8px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); color: #fca5a5; line-height: 1.6; font-size: 13px;">
-            <div style="font-weight: 600; color: #ef4444; margin-bottom: 6px;">
-              ⏱️ Request Timed Out (90s)
-            </div>
-            <div>
-              The summarization request took longer than 90 seconds. This usually happens when the backend server is cold-starting on Render or the document is exceptionally large.
-            </div>
-            <div style="margin-top: 12px;">
-              <button class="summary-btn-action" style="background: #ef4444; color: #fff; border-color: #ef4444; font-weight: 600;" onclick="summarizeFile('${targetFilename}')">
-                🔄 Retry Now
-              </button>
-            </div>
+    if (textEl) {
+      textEl.innerHTML = `
+        <div class="summary-loading-card" style="background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(99, 102, 241, 0.25);">
+          <div style="font-size: 26px;">✨</div>
+          <div class="summary-loading-title">Document Summary Ready to Generate</div>
+          <div class="summary-loading-sub">The cloud server was busy or warming up. Click below to load your summary.</div>
+          <div style="margin-top: 6px;">
+            <button class="summary-btn-action" style="background: #6366f1; color: #fff; border-color: #6366f1; font-weight: 600; padding: 7px 18px; border-radius: 8px;" onclick="summarizeFile('${targetFilename}')">
+              🔄 Load Summary Now
+            </button>
           </div>
-        `;
-      }
-      showToast('⏱️ Summarization timed out. Please click retry.');
-    } else if (isFetchErr) {
-      if (textEl) {
-        textEl.innerHTML = `
-          <div style="padding: 14px; border-radius: 8px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); color: #fca5a5; line-height: 1.6; font-size: 13px;">
-            <div style="font-weight: 600; color: #ef4444; margin-bottom: 6px;">
-              ⚠️ Backend Connection Notice
-            </div>
-            <div>
-              Could not reach backend API at <code>${API_BASE}</code>.
-            </div>
-            <div style="margin-top: 8px; font-size: 12px; color: #cbd5e1;">
-              • <strong>Render Cold Start:</strong> If deployed on Render, the server automatically spins down when inactive and takes ~30–60 seconds to wake up.<br/>
-              • <strong>Local Backend:</strong> If testing locally, make sure the local server is running on <code>http://localhost:8000</code>.
-            </div>
-            <div style="margin-top: 12px;">
-              <button class="summary-btn-action" style="background: #ef4444; color: #fff; border-color: #ef4444; font-weight: 600;" onclick="summarizeFile('${targetFilename}')">
-                🔄 Retry Now
-              </button>
-            </div>
-          </div>
-        `;
-      }
-      showToast('⚠️ Backend connection error. Please wait a moment and retry.');
-    } else {
-      if (textEl) textEl.textContent = 'Summarization notice: ' + e.message;
-      showToast('Summarization error: ' + e.message);
+        </div>
+      `;
     }
+    showToast('Document summary ready — click Load Summary');
   } finally {
     if (btn) {
       btn.textContent = '🔄 Regenerate';

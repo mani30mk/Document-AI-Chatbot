@@ -330,8 +330,12 @@ def save_session(
 EMBEDDINGS = None
 EMBEDDINGS_ERROR = None
 
-RAG_SYSTEM_PROMPT = """You are a helpful study assistant. Answer questions using ONLY the context below.
+RAG_SYSTEM_PROMPT = """You are a helpful study assistant. Answer questions using the document context below when possible.
+Be concise, clear, and structure your answer with headings and bullet points where appropriate.
 If the answer isn't in the context, say so honestly.
+
+At the very end of your response, on a new line, include a tag with the 2 to 4 word specific academic/technical subject for searching educational lecture videos:
+<!-- yt_search: <academic subject keywords> -->
 
 Context:
 {context}"""
@@ -1033,14 +1037,15 @@ def search_youtube(query: str, max_results: int = 3) -> list[dict]:
     """Search YouTube for educational tutorials matching the query without API key."""
     try:
         clean_query = query.strip()
-        url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(clean_query + " tutorial")
+        search_terms = clean_query + " tutorial lecture"
+        url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(search_terms)
         req = urllib.request.Request(
             url,
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
             },
         )
-        with urllib.request.urlopen(req, timeout=2.0) as response:
+        with urllib.request.urlopen(req, timeout=3.5) as response:
             html = response.read().decode("utf-8")
             match = re.search(r"var ytInitialData = ({.*?});</script>", html)
             if not match:
@@ -1057,7 +1062,7 @@ def search_youtube(query: str, max_results: int = 3) -> list[dict]:
                         title = v.get("title", {}).get("runs", [{}])[0].get("text", "")
                         channel = v.get("ownerText", {}).get("runs", [{}])[0].get("text", "")
                         duration = v.get("lengthText", {}).get("simpleText", "")
-                        if vid_id and title:
+                        if vid_id and title and "#shorts" not in title.lower() and "#short" not in title.lower():
                             videos.append({
                                 "id": vid_id,
                                 "title": title,
@@ -1450,6 +1455,31 @@ async def ask(req: AskRequest):
             err_msg = f"AI request timed out after {MAX_BUDGET_SECONDS:.0f}s: {str(last_error)}"
         raise HTTPException(status_code=500, detail=err_msg)
 
+    yt_results = []
+    try:
+        yt_query = req.question
+        if answer:
+            yt_match = re.search(r"<!--\s*yt_search:\s*(.*?)\s*-->", answer, re.IGNORECASE)
+            if yt_match:
+                extracted = yt_match.group(1).strip()
+                if extracted:
+                    yt_query = extracted
+                answer = re.sub(r"<!--\s*yt_search:\s*.*?\s*-->", "", answer).strip()
+            else:
+                clean_q = re.sub(r"^(what is|what are|explain|how to|describe|define)\s+", "", req.question, flags=re.I).strip(" ?.")
+                doc_title = ""
+                if sid in session_files and session_files[sid]:
+                    doc_title = os.path.splitext(session_files[sid][0])[0].replace("_", " ").replace("-", " ")
+                    doc_title = re.sub(r"\b(unit|chapter|notes|doc|file|pdf|part|presentation)\s*\d*\b", "", doc_title, flags=re.I).strip()
+                if doc_title and len(clean_q) < 30:
+                    yt_query = f"{doc_title} {clean_q}"
+                else:
+                    yt_query = clean_q
+
+        yt_results = search_youtube(yt_query, max_results=3)
+    except Exception as yt_err:
+        print(f"YouTube search notice: {yt_err}")
+
     # Persist turn to history
     session_histories[sid].append({"role": "user", "content": req.question})
     session_histories[sid].append({"role": "bot", "content": answer})
@@ -1459,12 +1489,6 @@ async def ask(req: AskRequest):
         session_histories[sid] = session_histories[sid][-20:]
 
     save_session(sid)
-
-    yt_results = []
-    try:
-        yt_results = search_youtube(req.question, max_results=3)
-    except Exception:
-        pass
 
     return AskResponse(
         answer=answer,
