@@ -789,22 +789,61 @@ class RemoteEmbeddings:
     def __init__(self, service_url: str):
         self.service_url = service_url.rstrip("/")
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Embed a list of document texts via the remote service."""
-        payload = json.dumps({"texts": texts}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.service_url}/embed",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        return data["embeddings"]
+    def embed_documents(self, texts: list[str], max_retries: int = 5) -> list[list[float]]:
+        """Embed a list of document texts via the remote service with warm-up retry and batching."""
+        if not texts:
+            return []
 
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a single query text via the remote service."""
-        return self.embed_documents([text])[0]
+        all_embeddings = []
+        batch_size = 25
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            payload = json.dumps({"texts": batch}).encode("utf-8")
+
+            last_err = None
+            for attempt in range(max_retries):
+                try:
+                    req = urllib.request.Request(
+                        f"{self.service_url}/embed",
+                        data=payload,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=45) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                    all_embeddings.extend(data["embeddings"])
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    print(f"Remote embedding batch {i//batch_size + 1} attempt {attempt + 1}/{max_retries} failed ({e}). Waking up / retrying in 5s...")
+                    time.sleep(5)
+
+            if last_err is not None:
+                raise last_err
+
+        return all_embeddings
+
+    def embed_query(self, text: str, max_retries: int = 4) -> list[float]:
+        """Embed a single query text via the remote service with warm-up retry."""
+        payload = json.dumps({"texts": [text]}).encode("utf-8")
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                req = urllib.request.Request(
+                    f"{self.service_url}/embed",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                return data["embeddings"][0]
+            except Exception as e:
+                last_err = e
+                print(f"Remote query embedding attempt {attempt + 1}/{max_retries} failed ({e}). Retrying in 4s...")
+                time.sleep(4)
+        raise last_err
 
 
 class GeminiEmbeddings:
