@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 # Lightweight Google GenAI SDK (~90 MB vs LangChain's ~420 MB)
 from google import genai
+from google.genai import types
 
 # Document parsers (direct, no LangChain wrappers)
 import docx
@@ -490,7 +491,10 @@ def generate_chat(
     Call Gemini generate_content with system prompt, chat history, and user message.
     Ensures strict turn alternation (user -> model -> user) to avoid 400 Bad Request.
     """
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=25.0),
+    )
 
     # Build contents list ensuring strict alternation between user and model
     contents = []
@@ -512,24 +516,46 @@ def generate_chat(
     else:
         contents.append({"role": "user", "parts": [{"text": user_message}]})
 
+    config_kwargs = {
+        "system_instruction": system_prompt,
+        "temperature": 0.2,
+        "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
+    }
+    try:
+        config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+    except Exception:
+        pass
+
+    config = types.GenerateContentConfig(**config_kwargs)
+
     response = client.models.generate_content(
         model=model_name,
         contents=contents,
-        config={
-            "system_instruction": system_prompt,
-            "temperature": 0.2,
-        },
+        config=config,
     )
     return response.text or ""
 
 
 def generate_text(model_name: str, api_key: str, prompt: str) -> str:
     """Simple single-turn text generation with Gemini."""
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=25.0),
+    )
+    config_kwargs = {
+        "temperature": 0.2,
+        "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
+    }
+    try:
+        config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+    except Exception:
+        pass
+
+    config = types.GenerateContentConfig(**config_kwargs)
     response = client.models.generate_content(
         model=model_name,
         contents=prompt,
-        config={"temperature": 0.2},
+        config=config,
     )
     return response.text or ""
 

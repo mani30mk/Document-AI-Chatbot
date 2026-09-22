@@ -2802,7 +2802,7 @@ async function summarizeFile(filename) {
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60000);
+  const timeoutId = setTimeout(() => controller.abort(), 90000);
 
   try {
     const res = await fetch(`${API_BASE}/summarize`, {
@@ -2837,10 +2837,10 @@ async function summarizeFile(filename) {
         textEl.innerHTML = `
           <div style="padding: 14px; border-radius: 8px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); color: #fca5a5; line-height: 1.6; font-size: 13px;">
             <div style="font-weight: 600; color: #ef4444; margin-bottom: 6px;">
-              ⏱️ Request Timed Out (60s)
+              ⏱️ Request Timed Out (90s)
             </div>
             <div>
-              The summarization request took longer than 60 seconds. This usually happens when the backend server is cold-starting on Render or the document is exceptionally large.
+              The summarization request took longer than 90 seconds. This usually happens when the backend server is cold-starting on Render or the document is exceptionally large.
             </div>
             <div style="margin-top: 12px;">
               <button class="summary-btn-action" style="background: #ef4444; color: #fff; border-color: #ef4444; font-weight: 600;" onclick="summarizeFile('${targetFilename}')">
