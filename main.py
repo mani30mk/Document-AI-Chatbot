@@ -799,7 +799,7 @@ class RemoteEmbeddings:
             return []
 
         all_embeddings = []
-        batch_size = 8
+        batch_size = 12
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             payload = json.dumps({"texts": batch}).encode("utf-8")

@@ -1471,7 +1471,7 @@ let API_BASE = getApiBase();
 
 // Embedding service URL — set this to your Render embedding service URL
 // When empty, warm-on-demand only pings the main app
-const EMBED_SERVICE_URL = 'https://document-ai-embeddings.onrender.com';
+const EMBED_SERVICE_URL = 'https://document-ai-chatbot-7ch2.onrender.com';
 
 /** Fire-and-forget wake-up pings to embedding service + main app */
 function warmUpServices() {
@@ -1566,6 +1566,8 @@ function loadLocalState() {
 }
 
 async function initSession() {
+  warmUpServices(); // Eagerly wake up both services on boot
+
   // Auto-probe localhost; if unreachable, automatically switch to Render cloud backend
   if (API_BASE === LOCAL_BACKEND && window.location.port !== '8000') {
     try {
@@ -1803,6 +1805,8 @@ async function uploadFiles(fileList) {
   const xhr = new XMLHttpRequest();
   xhr.open('POST', `${API_BASE}/upload/${sessionId}`);
 
+  let serverProcessingInterval = null;
+
   // 1. Client-to-server upload progress (0% - 65%)
   xhr.upload.onprogress = function (e) {
     if (e.lengthComputable) {
@@ -1811,13 +1815,38 @@ async function uploadFiles(fileList) {
     }
   };
 
-  // 2. Upload complete, server is parsing text and indexing vectors (70% - 90%)
+  // 2. Upload complete, server is parsing text and indexing vectors (70% - 97%)
   xhr.upload.onload = function () {
-    updateProgress(75, 'Extracting text & indexing vectors…', '');
+    let currentPct = 70;
+    updateProgress(currentPct, 'Parsing document text & structure…', '');
+
+    const steps = [
+      { pct: 75, text: '🔍 Extracting content & splitting chunks…' },
+      { pct: 80, text: '⚡ Connecting to AI embedding service…' },
+      { pct: 85, text: '🧠 Vectorizing document chunks with FastEmbed…' },
+      { pct: 90, text: '💾 Building semantic vector index…' },
+      { pct: 94, text: '✨ Finalizing document context…' },
+      { pct: 97, text: '⏳ Finalizing search index (almost ready)…' },
+    ];
+    let stepIdx = 0;
+    serverProcessingInterval = setInterval(() => {
+      if (stepIdx < steps.length) {
+        updateProgress(steps[stepIdx].pct, steps[stepIdx].text, '');
+        stepIdx++;
+      }
+    }, 3500);
   };
+
+  function cleanupProcessingInterval() {
+    if (serverProcessingInterval) {
+      clearInterval(serverProcessingInterval);
+      serverProcessingInterval = null;
+    }
+  }
 
   // 3. Response received
   xhr.onload = function () {
+    cleanupProcessingInterval();
     let data;
     try {
       data = JSON.parse(xhr.responseText);
@@ -1865,6 +1894,7 @@ async function uploadFiles(fileList) {
   };
 
   xhr.onerror = function () {
+    cleanupProcessingInterval();
     updateProgress(100, 'Network connection error', 'error');
     showToast('Network error — cannot reach server');
     hideProgress(4000);
