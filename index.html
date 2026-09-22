@@ -1399,15 +1399,19 @@ function getApiBase() {
   const origin = window.location.origin;
   if (origin && origin.startsWith('http')) {
     const host = window.location.hostname;
+    // Deployed in production on Render or custom domain
     if (host !== 'localhost' && host !== '127.0.0.1') {
       return origin;
     }
+    // Localhost running directly on port 8000
     if (window.location.port === '8000') {
       return origin;
     }
+    // Opened via local dev server (port 5500, 3000, etc.)
     return LOCAL_BACKEND;
   }
-  return LOCAL_BACKEND;
+  // Opened via file:///
+  return RENDER_BACKEND;
 }
 
 let API_BASE = getApiBase();
@@ -1509,6 +1513,20 @@ function loadLocalState() {
 }
 
 async function initSession() {
+  // Auto-probe localhost; if unreachable, automatically switch to Render cloud backend
+  if (API_BASE === LOCAL_BACKEND && window.location.port !== '8000') {
+    try {
+      const probeCtrl = new AbortController();
+      const probeTimer = setTimeout(() => probeCtrl.abort(), 1200);
+      const probe = await fetch(`${LOCAL_BACKEND}/health`, { signal: probeCtrl.signal });
+      clearTimeout(probeTimer);
+      if (!probe.ok) throw new Error();
+    } catch {
+      console.log('Local backend not active on :8000, switching to Render cloud backend:', RENDER_BACKEND);
+      API_BASE = RENDER_BACKEND;
+    }
+  }
+
   // 1. Immediately restore from local storage (0-ms delay, no blank screen)
   loadLocalState();
 
@@ -2535,7 +2553,7 @@ async function sendMessage() {
   document.getElementById('sendBtn').disabled = true;
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 45000);
+  const timeoutId = setTimeout(() => controller.abort(), 75000);
 
   try {
     const res = await fetch(`${API_BASE}/ask`, {
@@ -2579,9 +2597,14 @@ async function sendMessage() {
   } catch (err) {
     clearTimeout(timeoutId);
     if (err && err.name === 'AbortError') {
-      typingBubble.textContent = '⏱️ The request timed out (server took longer than 45s). The server may be waking up or busy. Please try asking again in a few moments.';
+      typingBubble.textContent = '⏱️ The request timed out (server took longer than 75s). The server may be waking up from sleep or busy. Please try asking again in a few moments.';
     } else {
-      typingBubble.textContent = 'Connection error — is the backend running? (' + (err ? err.message : '') + ')';
+      const isLocal = API_BASE.includes('localhost') || API_BASE.includes('127.0.0.1');
+      if (isLocal) {
+        typingBubble.textContent = 'Connection error: Local backend on :8000 is not running. Run `uvicorn main:app --reload --port 8000` or use cloud: ' + RENDER_BACKEND;
+      } else {
+        typingBubble.textContent = 'Connection error: Cloud backend is waking up or temporarily busy. Please wait 15 seconds and retry. (' + (err ? err.message : '') + ')';
+      }
     }
     typingBubble.className = 'bubble error';
   } finally {
