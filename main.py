@@ -795,7 +795,7 @@ class RemoteEmbeddings:
             return []
 
         all_embeddings = []
-        batch_size = 25
+        batch_size = 8
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             payload = json.dumps({"texts": batch}).encode("utf-8")
@@ -809,7 +809,7 @@ class RemoteEmbeddings:
                         headers={"Content-Type": "application/json"},
                         method="POST",
                     )
-                    with urllib.request.urlopen(req, timeout=45) as resp:
+                    with urllib.request.urlopen(req, timeout=60) as resp:
                         data = json.loads(resp.read().decode("utf-8"))
                     all_embeddings.extend(data["embeddings"])
                     last_err = None
@@ -855,7 +855,7 @@ class GeminiEmbeddings:
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed a list of texts using Gemini embedding API with candidate model fallback."""
-        candidate_models = [self.model, "gemini-embedding-001", "text-embedding-005", "text-embedding-004"]
+        candidate_models = [self.model, "gemini-embedding-001", "gemini-embedding-2"]
         unique_models = []
         for m in candidate_models:
             if m and m not in unique_models:
