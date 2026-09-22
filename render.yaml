@@ -8,6 +8,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: EMBEDDING_SERVICE_URL
+        value: https://document-ai-embeddings.onrender.com
 
   - type: web
     name: document-ai-embeddings

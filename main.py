@@ -105,8 +105,8 @@ def evict_old_sessions():
         print(f"Evicted session {oldest[:8]}... from in-memory cache (will re-hydrate from Supabase on demand).")
 
 
-# Remote embedding service URL (set via env var when using two-service architecture)
-EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "").rstrip("/")
+# Remote embedding service URL (defaults to deployed microservice)
+EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "https://document-ai-embeddings.onrender.com").rstrip("/")
 
 
 # Supabase (persistent cloud storage & pgvector)
@@ -715,67 +715,91 @@ class RemoteEmbeddings:
 class GeminiEmbeddings:
     """Lightweight embeddings using google-genai SDK directly (no LangChain)."""
 
-    def __init__(self, api_key: str, model: str = "text-embedding-004"):
+    def __init__(self, api_key: str, model: str = "gemini-embedding-001"):
         self.client = genai.Client(api_key=api_key)
         self.model = model
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Embed a list of texts using Gemini embedding API."""
-        all_embeddings = []
-        # Batch in groups of 100 (API limit)
-        for i in range(0, len(texts), 100):
-            batch = texts[i:i + 100]
-            result = self.client.models.embed_content(
-                model=self.model,
-                contents=batch,
-            )
-            all_embeddings.extend([list(e.values) for e in result.embeddings])
-        return all_embeddings
+        """Embed a list of texts using Gemini embedding API with candidate model fallback."""
+        candidate_models = [self.model, "gemini-embedding-001", "text-embedding-005", "text-embedding-004"]
+        unique_models = []
+        for m in candidate_models:
+            if m and m not in unique_models:
+                unique_models.append(m)
+
+        last_err = None
+        for m in unique_models:
+            try:
+                all_embeddings = []
+                for i in range(0, len(texts), 100):
+                    batch = texts[i:i + 100]
+                    result = self.client.models.embed_content(
+                        model=m,
+                        contents=batch,
+                    )
+                    all_embeddings.extend([list(e.values) for e in result.embeddings])
+                self.model = m
+                return all_embeddings
+            except Exception as e:
+                last_err = e
+                print(f"Notice: Model {m} failed for embed_content ({e}), trying next candidate...")
+                continue
+        raise last_err
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a single query text."""
         return self.embed_documents([text])[0]
 
 
+class UnifiedEmbeddings:
+    """
+    Hybrid embeddings:
+    1. Primary: Remote FastEmbed microservice (384-dim, 0 MB local RAM, matches Supabase vector(384))
+    2. Fallback: Gemini cloud embeddings (if remote is down / cold-starting)
+    """
+
+    def __init__(self, remote_url: str | None = None, api_key: str | None = None):
+        self.remote_url = remote_url
+        self.api_key = api_key
+        self._remote = RemoteEmbeddings(remote_url) if remote_url else None
+        self._gemini = GeminiEmbeddings(api_key) if api_key else None
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if self._remote:
+            try:
+                return self._remote.embed_documents(texts)
+            except Exception as e:
+                print(f"Remote embedding service error ({e}), trying Gemini cloud fallback...")
+        if self._gemini:
+            return self._gemini.embed_documents(texts)
+        raise ValueError("No embedding service available. Check EMBEDDING_SERVICE_URL or GEMINI_API_KEY.")
+
+    def embed_query(self, text: str) -> list[float]:
+        if self._remote:
+            try:
+                return self._remote.embed_query(text)
+            except Exception as e:
+                print(f"Remote embedding service error ({e}), trying Gemini cloud fallback...")
+        if self._gemini:
+            return self._gemini.embed_query(text)
+        raise ValueError("No embedding service available. Check EMBEDDING_SERVICE_URL or GEMINI_API_KEY.")
+
+
 def get_embeddings():
     """
     Returns an embeddings instance with fallback priority:
-      1. Remote embedding service (EMBEDDING_SERVICE_URL) — 0 MB local RAM, saves tokens
+      1. Remote embedding service (EMBEDDING_SERVICE_URL) — 0 MB local RAM, saves tokens, 384-dim
       2. Google cloud embeddings (google-genai SDK) — 0 MB extra RAM, uses Gemini quota
     """
-    global EMBEDDINGS, EMBEDDINGS_ERROR
+    global EMBEDDINGS
     if EMBEDDINGS is not None:
         return EMBEDDINGS
-    if EMBEDDINGS_ERROR is not None:
-        raise EMBEDDINGS_ERROR
 
-    # Priority 1: Remote embedding service (separate Render instance)
-    if EMBEDDING_SERVICE_URL:
-        try:
-            # Quick health check to verify service is reachable
-            health_req = urllib.request.Request(
-                f"{EMBEDDING_SERVICE_URL}/health",
-                headers={"User-Agent": "DocumentAI/1.0"},
-            )
-            urllib.request.urlopen(health_req, timeout=5)
-            EMBEDDINGS = RemoteEmbeddings(EMBEDDING_SERVICE_URL)
-            print(f"Using remote embedding service at {EMBEDDING_SERVICE_URL} (0 MB local RAM, saves tokens).")
-            return EMBEDDINGS
-        except Exception as remote_err:
-            print(f"Notice: Remote embedding service unavailable ({remote_err}), trying cloud fallback...")
-
-    # Priority 2: Google cloud embeddings via lightweight google-genai SDK
+    remote_url = EMBEDDING_SERVICE_URL or "https://document-ai-embeddings.onrender.com"
     key = get_current_api_key()
-    if key:
-        try:
-            EMBEDDINGS = GeminiEmbeddings(api_key=key)
-            print("Using GeminiEmbeddings (google-genai SDK, 0 MB extra RAM).")
-            return EMBEDDINGS
-        except Exception as g_err:
-            EMBEDDINGS_ERROR = g_err
-            raise
 
-    raise ValueError("No embedding method available. Set EMBEDDING_SERVICE_URL or GEMINI_API_KEY.")
+    EMBEDDINGS = UnifiedEmbeddings(remote_url=remote_url, api_key=key)
+    return EMBEDDINGS
 
 
 # ── Simple in-memory vector search (replaces ChromaDB) ──────────────────────
@@ -810,7 +834,7 @@ def search_supabase_vectors(query_embedding: list[float], session_id: str, k: in
         result = supabase_client.rpc("match_documents", {
             "query_embedding": query_embedding,
             "match_count": k,
-            "filter": {"metadata": {"session_id": session_id}},
+            "filter": {"session_id": session_id},
         }).execute()
         if result.data:
             return [{"content": r.get("content", ""), "metadata": r.get("metadata", {})} for r in result.data]
