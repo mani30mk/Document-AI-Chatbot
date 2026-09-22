@@ -9,7 +9,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: EMBEDDING_SERVICE_URL
-        value: https://document-ai-embeddings.onrender.com
+        value: https://document-ai-chatbot-7ch2.onrender.com
 
   - type: web
     name: document-ai-embeddings

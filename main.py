@@ -119,7 +119,7 @@ def evict_old_sessions():
 
 
 # Remote embedding service URL (defaults to deployed microservice)
-EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "https://document-ai-embeddings.onrender.com").rstrip("/")
+EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "https://document-ai-chatbot-7ch2.onrender.com").rstrip("/")
 
 
 # Supabase (persistent cloud storage & pgvector)
@@ -886,7 +886,7 @@ def get_embeddings():
     if EMBEDDINGS is not None:
         return EMBEDDINGS
 
-    remote_url = EMBEDDING_SERVICE_URL or "https://document-ai-embeddings.onrender.com"
+    remote_url = EMBEDDING_SERVICE_URL or "https://document-ai-chatbot-7ch2.onrender.com"
     key = get_current_api_key()
 
     EMBEDDINGS = UnifiedEmbeddings(remote_url=remote_url, api_key=key)
