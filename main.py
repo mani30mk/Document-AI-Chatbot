@@ -14,6 +14,18 @@ Run:
     uvicorn main:app --reload --port 8000
 """
 
+import socket
+
+# Force IPv4 socket resolution to prevent Render container IPv6 handshake/read timeouts to Google APIs
+_orig_getaddrinfo = socket.getaddrinfo
+
+def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if family == 0 or family == socket.AF_UNSPEC:
+        family = socket.AF_INET
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
+socket.getaddrinfo = _ipv4_getaddrinfo
+
 import os
 import uuid
 import math
@@ -394,7 +406,7 @@ def rotate_api_key() -> str | None:
 
 
 def is_rate_limit_error(exc: Exception) -> bool:
-    """Detect if an exception is due to 429 quota exhaustion or 503 high demand / model overloaded."""
+    """Detect if an exception is due to quota exhaustion, high demand, or transient network timeouts."""
     msg = str(exc).lower()
     return any(
         s in msg
@@ -412,6 +424,12 @@ def is_rate_limit_error(exc: Exception) -> bool:
             "temporarily unavailable",
             "service unavailable",
             "capacity",
+            "timed out",
+            "timeout",
+            "handshake",
+            "ssl",
+            "connection error",
+            "connection reset",
         ]
     )
 
@@ -440,7 +458,7 @@ def get_available_models(api_key: str | None = None) -> list[str]:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
             req = urllib.request.Request(url, headers={"User-Agent": "DocumentAI/1.0"})
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 models = data.get("models", [])
                 discovered = []
