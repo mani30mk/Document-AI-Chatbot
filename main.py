@@ -42,6 +42,8 @@ import tempfile
 import base64
 import io
 import gc
+import time
+from datetime import datetime, timezone
 from PIL import Image
 import urllib.request
 import urllib.parse
@@ -108,7 +110,21 @@ def get_or_load_vectorstore(session_id: str) -> Chroma | None:
     return None
 
 
+# Supabase (persistent cloud storage & pgvector)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
+supabase_client: Client | None = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("Connected to Supabase for persistent cloud storage & pgvector.")
+    except Exception as e:
+        print(f"Warning: Could not connect to Supabase: {e}")
+
+
 def load_sessions_from_disk():
+    """Dev fallback: Load sessions from local JSON file (not used in production with Supabase)."""
     global session_histories, session_files, session_docs, session_slides
     if os.path.exists(SESSIONS_FILE):
         try:
@@ -128,6 +144,7 @@ def load_sessions_from_disk():
 
 
 def save_sessions_to_disk():
+    """Dev fallback: Save sessions to local JSON file (not used in production with Supabase)."""
     try:
         data = {
             "files": session_files,
@@ -147,17 +164,149 @@ def save_sessions_to_disk():
         print(f"Notice: Could not save sessions to disk ({e})")
 
 
-# Supabase (persistent cloud storage & pgvector)
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
-supabase_client: Client | None = None
+def load_session(session_id: str) -> dict | None:
+    """
+    Load a session by session_id from Supabase (production) or local JSON (dev fallback).
+    Hydrates in-memory dicts (session_files, session_docs, session_slides, session_histories)
+    and returns a dict with the session state, or None if not found.
+    """
+    global session_histories, session_files, session_docs, session_slides
 
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        print("Connected to Supabase for persistent cloud storage & pgvector.")
-    except Exception as e:
-        print(f"Warning: Could not connect to Supabase: {e}")
+    has_mem = (
+        session_id in session_histories
+        or session_id in session_files
+        or session_id in session_docs
+        or session_id in session_slides
+    )
+
+    # 1. If Supabase is connected, fetch from chat_sessions table
+    if supabase_client:
+        try:
+            res = (
+                supabase_client.table("chat_sessions")
+                .select("*")
+                .eq("session_id", session_id)
+                .execute()
+            )
+            if res.data and len(res.data) > 0:
+                row = res.data[0]
+                files = row.get("files") or []
+                docs = row.get("docs") or {}
+                slides = row.get("slides") or {}
+                raw_history = row.get("history") or []
+
+                # Hydrate in-memory request-scoped cache
+                session_files[session_id] = files
+                session_docs[session_id] = docs
+                session_slides[session_id] = slides
+                session_histories[session_id] = [
+                    HumanMessage(content=m.get("content", ""))
+                    if m.get("role") == "user"
+                    else AIMessage(content=m.get("content", ""))
+                    for m in raw_history
+                    if isinstance(m, dict)
+                ]
+                return {
+                    "session_id": session_id,
+                    "files": files,
+                    "docs": docs,
+                    "slides": slides,
+                    "history": raw_history,
+                }
+            elif has_mem:
+                raw_history = [
+                    {"role": "user" if isinstance(m, HumanMessage) else "bot", "content": m.content}
+                    for m in session_histories.get(session_id, [])
+                ]
+                return {
+                    "session_id": session_id,
+                    "files": session_files.get(session_id, []),
+                    "docs": session_docs.get(session_id, {}),
+                    "slides": session_slides.get(session_id, {}),
+                    "history": raw_history,
+                }
+            return None
+        except Exception as err:
+            print(f"Notice: Supabase load_session error for {session_id} ({err}), trying dev fallback...")
+
+    # 2. Dev fallback: check in-memory or load from local JSON disk file
+    if not has_mem:
+        load_sessions_from_disk()
+        has_mem = (
+            session_id in session_histories
+            or session_id in session_files
+            or session_id in session_docs
+            or session_id in session_slides
+        )
+
+    if has_mem:
+        raw_history = [
+            {"role": "user" if isinstance(m, HumanMessage) else "bot", "content": m.content}
+            for m in session_histories.get(session_id, [])
+        ]
+        return {
+            "session_id": session_id,
+            "files": session_files.get(session_id, []),
+            "docs": session_docs.get(session_id, {}),
+            "slides": session_slides.get(session_id, {}),
+            "history": raw_history,
+        }
+
+    return None
+
+
+def save_session(
+    session_id: str,
+    files: list[str] | None = None,
+    docs: dict[str, str] | None = None,
+    slides: dict[str, list] | None = None,
+    history: list | None = None,
+):
+    """
+    Persist session state to Supabase (production) or local JSON (dev fallback).
+    """
+    global session_histories, session_files, session_docs, session_slides
+
+    # Update in-memory dicts
+    if files is not None:
+        session_files[session_id] = files
+    if docs is not None:
+        session_docs[session_id] = docs
+    if slides is not None:
+        session_slides[session_id] = slides
+    if history is not None:
+        session_histories[session_id] = history
+
+    cur_files = session_files.get(session_id, [])
+    cur_docs = session_docs.get(session_id, {})
+    cur_slides = session_slides.get(session_id, {})
+    cur_msgs = session_histories.get(session_id, [])
+
+    history_json = [
+        {"role": "user" if isinstance(m, HumanMessage) else "bot", "content": m.content}
+        if not isinstance(m, dict)
+        else m
+        for m in cur_msgs
+    ]
+
+    # 1. Primary: Persist to Supabase chat_sessions table
+    if supabase_client:
+        try:
+            payload = {
+                "session_id": session_id,
+                "files": cur_files,
+                "docs": cur_docs,
+                "slides": cur_slides,
+                "history": history_json,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            supabase_client.table("chat_sessions").upsert(payload).execute()
+            return
+        except Exception as err:
+            print(f"Notice: Supabase save_session error ({err}), falling back to disk...")
+
+    # 2. Dev fallback: Save to local JSON disk file (not used in production)
+    save_sessions_to_disk()
 
 
 # ── Shared components ────────────────────────────────────────────────────────
@@ -479,8 +628,15 @@ def format_docs(docs):
     return "\n\n".join(d.page_content for d in docs)
 
 
-def get_embeddings():
+def get_embeddings(api_key: str | None = None):
     global EMBEDDINGS, EMBEDDINGS_ERROR
+
+    # If an explicit api_key is requested, build and return directly without module-level caching
+    if api_key:
+        return GoogleGenerativeAIEmbeddings(
+            model="models/text-embedding-004",
+            google_api_key=api_key,
+        )
 
     if EMBEDDINGS is not None:
         return EMBEDDINGS
@@ -598,28 +754,24 @@ def search_youtube(query: str, max_results: int = 3) -> list[dict]:
 def new_session():
     """Create a new chat/upload session."""
     sid = str(uuid.uuid4())
-    session_histories[sid] = []
-    session_files[sid] = []
-    session_docs[sid] = {}
+    save_session(sid, files=[], docs={}, slides={}, history=[])
     return SessionResponse(session_id=sid, files=[])
 
 
 @app.get("/session/{session_id}")
 def get_session_state(session_id: str):
     """Retrieve full session state (files, slides, docs, chat history) for page reload."""
-    if session_id not in session_histories and session_id not in session_files:
+    sess = load_session(session_id)
+    if not sess:
         raise HTTPException(status_code=404, detail="Session not found.")
-    
-    history_list = []
-    for msg in session_histories.get(session_id, []):
-        role = "user" if isinstance(msg, HumanMessage) else "bot"
-        history_list.append({"role": role, "content": msg.content})
+
+    history_list = sess.get("history", [])
 
     return {
         "session_id": session_id,
-        "files": session_files.get(session_id, []),
-        "slides": session_slides.get(session_id, {}),
-        "docs": session_docs.get(session_id, {}),
+        "files": sess.get("files", []),
+        "slides": sess.get("slides", {}),
+        "docs": sess.get("docs", {}),
         "history": history_list,
         "history_turns": len(history_list) // 2,
     }
@@ -718,10 +870,12 @@ async def upload_files(
     Upload one or more study files into the session's vector store.
     Supports PDF, DOCX, PPTX, TXT.
     """
+    load_session(session_id)
     if session_id not in session_histories:
         session_histories[session_id] = []
         session_files[session_id] = []
         session_docs[session_id] = {}
+        session_slides[session_id] = {}
 
     all_docs = []
     uploaded_names = []
@@ -776,56 +930,84 @@ async def upload_files(
     for c in chunks:
         c.metadata["session_id"] = session_id
 
-    try:
-        embeddings = get_embeddings()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Embedding model could not be initialized: {exc}",
-        ) from exc
-
-    # Persist in Supabase pgvector if configured, otherwise use in-memory Chroma
+    # Embedding & Indexing with Key Rotation on Rate Limit (429)
+    keys = get_gemini_api_keys()
+    max_attempts = len(keys) if keys else 1
     stored_in_supabase = False
-    if supabase_client:
-        try:
-            supabase_vectorstore = SupabaseVectorStore(
-                client=supabase_client,
-                embedding=embeddings,
-                table_name="documents",
-                query_name="match_documents",
-            )
-            supabase_vectorstore.add_documents(chunks)
-            stored_in_supabase = True
-        except Exception as err:
-            print(f"Warning: Supabase vector store insert failed ({err}), falling back to Chroma.")
+    indexing_success = False
+    last_emb_error = None
 
-    if not stored_in_supabase:
-        vector_dir = os.path.join(session_dir, "chroma_db")
-        os.makedirs(vector_dir, exist_ok=True)
-        if session_id in session_vectorstores:
-            session_vectorstores[session_id].add_texts(
-                [c.page_content for c in chunks]
-            )
-        else:
-            if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
-                oldest_sid = next(iter(session_vectorstores))
-                del session_vectorstores[oldest_sid]
-            session_vectorstores[session_id] = Chroma.from_documents(
-                chunks, embeddings, persist_directory=vector_dir
-            )
+    for attempt in range(max_attempts):
+        current_key = get_current_api_key() if keys else None
+        try:
+            curr_embeddings = get_embeddings(api_key=current_key) if current_key else get_embeddings()
+
+            # Persist in Supabase pgvector if configured, otherwise use in-memory Chroma
+            if supabase_client:
+                try:
+                    supabase_vectorstore = SupabaseVectorStore(
+                        client=supabase_client,
+                        embedding=curr_embeddings,
+                        table_name="documents",
+                        query_name="match_documents",
+                    )
+                    supabase_vectorstore.add_documents(chunks)
+                    stored_in_supabase = True
+                except Exception as err:
+                    if is_rate_limit_error(err):
+                        raise
+                    print(f"Warning: Supabase vector store insert failed ({err}), falling back to Chroma.")
+                    stored_in_supabase = False
+
+            if not stored_in_supabase:
+                vector_dir = os.path.join(session_dir, "chroma_db")
+                os.makedirs(vector_dir, exist_ok=True)
+                if session_id in session_vectorstores:
+                    session_vectorstores[session_id].add_texts(
+                        [c.page_content for c in chunks]
+                    )
+                else:
+                    if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
+                        oldest_sid = next(iter(session_vectorstores))
+                        del session_vectorstores[oldest_sid]
+                    session_vectorstores[session_id] = Chroma.from_documents(
+                        chunks, curr_embeddings, persist_directory=vector_dir
+                    )
+
+            indexing_success = True
+            break
+        except Exception as emb_err:
+            last_emb_error = emb_err
+            if is_rate_limit_error(emb_err) and keys:
+                print(f"Embedding rate limit / 429 with current key ({emb_err}). Rotating key...")
+                rotate_api_key()
+                continue
+            else:
+                print(f"Embedding / indexing error ({emb_err})")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to embed/index documents: {str(emb_err)}",
+                )
+
+    if not indexing_success:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to embed documents after rotating API keys: {str(last_emb_error)}",
+        )
 
     # Clean up upload buffers and trigger garbage collection immediately
+    chunks_count = len(chunks)
     del all_docs
     del chunks
     gc.collect()
 
     session_files[session_id].extend(uploaded_names)
-    save_sessions_to_disk()
+    save_session(session_id)
 
     return {
-        "message": f"Uploaded {len(uploaded_names)} file(s), indexed {len(chunks)} chunks.",
+        "message": f"Uploaded {len(uploaded_names)} file(s), indexed {chunks_count} chunks.",
         "files": session_files[session_id],
-        "chunks": len(chunks),
+        "chunks": chunks_count,
         "slides": session_slides.get(session_id, {}),
         "docs": session_docs.get(session_id, {}),
         "storage": "supabase" if stored_in_supabase else "in-memory",
@@ -835,6 +1017,8 @@ async def upload_files(
 @app.get("/slides/{session_id}/{filename}")
 def get_slides(session_id: str, filename: str):
     """Retrieve structured slides for PPT viewer."""
+    if session_id not in session_slides:
+        load_session(session_id)
     if session_id not in session_slides or filename not in session_slides[session_id]:
         raise HTTPException(status_code=404, detail="Slides not found.")
     return {
@@ -846,6 +1030,8 @@ def get_slides(session_id: str, filename: str):
 @app.get("/document/{session_id}/{filename}")
 def get_document_text(session_id: str, filename: str):
     """Retrieve extracted document text for DOCX/TXT viewer."""
+    if session_id not in session_docs:
+        load_session(session_id)
     if session_id not in session_docs or filename not in session_docs[session_id]:
         raise HTTPException(status_code=404, detail="Document text not found.")
     return {
@@ -861,6 +1047,8 @@ async def ask(req: AskRequest):
     """
     sid = req.session_id
 
+    if sid not in session_histories:
+        load_session(sid)
     if sid not in session_histories:
         raise HTTPException(status_code=404, detail="Session not found.")
 
@@ -921,9 +1109,17 @@ async def ask(req: AskRequest):
 
     answer = None
     last_error = None
+    start_time = time.monotonic()
+    MAX_BUDGET_SECONDS = 35.0
 
     for m_name in models_to_try:
+        if time.monotonic() - start_time >= MAX_BUDGET_SECONDS:
+            print(f"Time budget exceeded ({time.monotonic() - start_time:.1f}s), breaking model loop in /ask...")
+            break
         for _ in range(len(keys)):
+            if time.monotonic() - start_time >= MAX_BUDGET_SECONDS:
+                print(f"Time budget exceeded ({time.monotonic() - start_time:.1f}s), breaking key loop in /ask...")
+                break
             current_key = get_current_api_key()
             try:
                 curr_llm = get_llm(m_name, api_key=current_key)
@@ -948,7 +1144,10 @@ async def ask(req: AskRequest):
             break
 
     if not answer:
-        raise HTTPException(status_code=500, detail=f"AI model error: {str(last_error)}")
+        err_msg = f"AI model error: {str(last_error)}"
+        if time.monotonic() - start_time >= MAX_BUDGET_SECONDS:
+            err_msg = f"AI request timed out after {MAX_BUDGET_SECONDS:.0f}s: {str(last_error)}"
+        raise HTTPException(status_code=500, detail=err_msg)
 
     # Persist turn to history
     session_histories[sid].append(HumanMessage(content=req.question))
@@ -958,7 +1157,7 @@ async def ask(req: AskRequest):
     if len(session_histories[sid]) > 20:
         session_histories[sid] = session_histories[sid][-20:]
 
-    save_sessions_to_disk()
+    save_session(sid)
 
     yt_results = []
     try:
@@ -985,6 +1184,10 @@ async def summarize(req: SummarizeRequest):
     sid = req.session_id
     fname = req.filename
     text = (req.text or "").strip()
+
+    # Ensure session state is loaded from Supabase if not in memory
+    if sid not in session_docs and sid not in session_slides:
+        load_session(sid)
 
     # Tier 1: Client provided extracted text directly
     if not text:
@@ -1041,6 +1244,7 @@ async def summarize(req: SummarizeRequest):
                 if docs:
                     text = "\n\n".join(d.page_content for d in docs)
                     session_docs.setdefault(sid, {})[fname] = text
+                    save_session(sid)
             except Exception as load_err:
                 print(f"Notice: Could not load file from disk for summarize ({load_err})")
 
@@ -1094,9 +1298,17 @@ async def summarize(req: SummarizeRequest):
 
     summary = None
     last_error = None
+    start_time = time.monotonic()
+    MAX_BUDGET_SECONDS = 35.0
 
     for m_name in models_to_try:
+        if time.monotonic() - start_time >= MAX_BUDGET_SECONDS:
+            print(f"Time budget exceeded ({time.monotonic() - start_time:.1f}s), breaking model loop in /summarize...")
+            break
         for _ in range(len(keys)):
+            if time.monotonic() - start_time >= MAX_BUDGET_SECONDS:
+                print(f"Time budget exceeded ({time.monotonic() - start_time:.1f}s), breaking key loop in /summarize...")
+                break
             current_key = get_current_api_key()
             try:
                 curr_llm = get_llm(m_name, api_key=current_key)
@@ -1117,7 +1329,10 @@ async def summarize(req: SummarizeRequest):
             break
 
     if not summary:
-        raise HTTPException(status_code=500, detail=f"AI model error: {str(last_error)}")
+        err_msg = f"AI model error: {str(last_error)}"
+        if time.monotonic() - start_time >= MAX_BUDGET_SECONDS:
+            err_msg = f"AI summarization timed out after {MAX_BUDGET_SECONDS:.0f}s: {str(last_error)}"
+        raise HTTPException(status_code=500, detail=err_msg)
 
     return {"summary": summary}
 
@@ -1127,9 +1342,11 @@ async def summarize(req: SummarizeRequest):
 def clear_history(session_id: str):
     """Clear conversation history for a session (keeps files/vectorstore)."""
     if session_id not in session_histories:
+        load_session(session_id)
+    if session_id not in session_histories:
         raise HTTPException(status_code=404, detail="Session not found.")
     session_histories[session_id] = []
-    save_sessions_to_disk()
+    save_session(session_id)
     return {"message": "Conversation history cleared."}
 
 
