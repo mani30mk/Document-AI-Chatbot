@@ -1,20 +1,22 @@
 """
-RAG Study Assistant — FastAPI Backend
-Wraps your LangChain RAG chain with:
+RAG Study Assistant — FastAPI Backend (Lightweight Edition)
+Uses google-genai SDK directly instead of LangChain to fit within Render 512MB free tier.
+
+Wraps:
   - File upload + multi-format loading (PDF, DOCX, PPTX, TXT)
-  - Per-session ChromaDB vector stores
+  - Per-session vector stores (Supabase pgvector primary, in-memory fallback)
   - Multi-turn conversation memory
   - /ask endpoint consumed by the frontend chatbot
 
 Run:
-    pip install fastapi uvicorn langchain langchain-community langchain-huggingface
-                langchain-chroma langchain-google-genai python-multipart pypdf
-                unstructured python-docx python-pptx
+    pip install fastapi uvicorn google-genai python-multipart pypdf
+                python-docx python-pptx supabase Pillow
     uvicorn main:app --reload --port 8000
 """
 
 import os
 import uuid
+import math
 from typing import List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
@@ -22,20 +24,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-# ── LangChain imports ───────────────────────────────────────────────────────
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_core.documents import Document
+# Lightweight Google GenAI SDK (~90 MB vs LangChain's ~420 MB)
+from google import genai
+
+# Document parsers (direct, no LangChain wrappers)
 import docx
 from pptx import Presentation
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
-from langchain_community.vectorstores import SupabaseVectorStore
+import pypdf
+
+# Supabase client (persistent cloud storage & pgvector)
 from supabase.client import Client, create_client
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.messages import HumanMessage, AIMessage
 
 import tempfile
 import base64
@@ -74,7 +72,7 @@ SESSIONS_FILE = os.path.join(UPLOAD_DIR, "sessions.json")
 
 # In-memory session fallbacks (capped to 1 active vectorstore to conserve Render 512MB RAM)
 MAX_CACHED_VECTORSTORES = 1
-session_vectorstores: dict[str, Chroma] = {}
+session_vectorstores: dict[str, dict] = {}  # sid -> {"chunks": [...], "embeddings": [...]}
 session_histories: dict[str, list] = {}
 session_files: dict[str, list[str]] = {}
 session_docs: dict[str, dict[str, str]] = {}
@@ -102,40 +100,13 @@ def evict_old_sessions():
         session_docs.pop(oldest, None)
         session_slides.pop(oldest, None)
         session_api_keys.pop(oldest, None)
+        session_vectorstores.pop(oldest, None)
         gc.collect()
-        print(f"Evicted session {oldest[:8]}… from in-memory cache (will re-hydrate from Supabase on demand).")
+        print(f"Evicted session {oldest[:8]}... from in-memory cache (will re-hydrate from Supabase on demand).")
 
 
 # Remote embedding service URL (set via env var when using two-service architecture)
 EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "").rstrip("/")
-
-
-def get_or_load_vectorstore(session_id: str) -> Chroma | None:
-    """Retrieve in-memory Chroma or restore from disk-persisted directory."""
-    if session_id in session_vectorstores:
-        return session_vectorstores[session_id]
-
-    vector_dir = os.path.join(UPLOAD_DIR, session_id, "chroma_db")
-    if os.path.exists(vector_dir):
-        try:
-            embeddings = get_embeddings()
-            vs = Chroma(persist_directory=vector_dir, embedding_function=embeddings)
-            # Evict oldest vectorstore if exceeding cache limit
-            if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
-                oldest_sid = next(iter(session_vectorstores))
-                del session_vectorstores[oldest_sid]
-                gc.collect()
-            session_vectorstores[session_id] = vs
-            return vs
-        except Exception as e:
-            print(f"Notice: Could not load Chroma from disk for {session_id} ({e})")
-            # If dimension mismatch or corrupted collection, clean it up
-            try:
-                import shutil
-                shutil.rmtree(vector_dir, ignore_errors=True)
-            except Exception:
-                pass
-    return None
 
 
 # Supabase (persistent cloud storage & pgvector)
@@ -151,6 +122,8 @@ if SUPABASE_URL and SUPABASE_KEY:
         print(f"Warning: Could not connect to Supabase: {e}")
 
 
+# ── Session persistence ────────────────────────────────────────────────────
+
 def load_sessions_from_disk():
     """Dev fallback: Load sessions from local JSON file (not used in production with Supabase)."""
     global session_histories, session_files, session_docs, session_slides
@@ -163,7 +136,7 @@ def load_sessions_from_disk():
                 session_slides.update(data.get("slides", {}))
                 for sid, msgs in data.get("histories", {}).items():
                     session_histories[sid] = [
-                        HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"])
+                        {"role": m["role"], "content": m["content"]}
                         for m in msgs
                     ]
             print(f"Loaded {len(session_files)} sessions from disk.")
@@ -180,7 +153,7 @@ def save_sessions_to_disk():
             "slides": session_slides,
             "histories": {
                 sid: [
-                    {"role": "user" if isinstance(m, HumanMessage) else "bot", "content": m.content}
+                    {"role": m["role"], "content": m["content"]}
                     for m in msgs
                 ]
                 for sid, msgs in session_histories.items()
@@ -195,8 +168,7 @@ def save_sessions_to_disk():
 def load_session(session_id: str) -> dict | None:
     """
     Load a session by session_id from Supabase (production) or local JSON (dev fallback).
-    Hydrates in-memory dicts (session_files, session_docs, session_slides, session_histories)
-    and returns a dict with the session state, or None if not found.
+    Hydrates in-memory dicts and returns a dict with the session state, or None if not found.
     """
     global session_histories, session_files, session_docs, session_slides
 
@@ -228,9 +200,7 @@ def load_session(session_id: str) -> dict | None:
                 session_docs[session_id] = docs
                 session_slides[session_id] = slides
                 session_histories[session_id] = [
-                    HumanMessage(content=m.get("content", ""))
-                    if m.get("role") == "user"
-                    else AIMessage(content=m.get("content", ""))
+                    {"role": m.get("role", "user"), "content": m.get("content", "")}
                     for m in raw_history
                     if isinstance(m, dict)
                 ]
@@ -243,7 +213,7 @@ def load_session(session_id: str) -> dict | None:
                 }
             elif has_mem:
                 raw_history = [
-                    {"role": "user" if isinstance(m, HumanMessage) else "bot", "content": m.content}
+                    {"role": m["role"], "content": m["content"]}
                     for m in session_histories.get(session_id, [])
                 ]
                 return {
@@ -269,7 +239,7 @@ def load_session(session_id: str) -> dict | None:
 
     if has_mem:
         raw_history = [
-            {"role": "user" if isinstance(m, HumanMessage) else "bot", "content": m.content}
+            {"role": m["role"], "content": m["content"]}
             for m in session_histories.get(session_id, [])
         ]
         return {
@@ -311,9 +281,7 @@ def save_session(
     cur_msgs = session_histories.get(session_id, [])
 
     history_json = [
-        {"role": "user" if isinstance(m, HumanMessage) else "bot", "content": m.content}
-        if not isinstance(m, dict)
-        else m
+        {"role": m["role"], "content": m["content"]}
         for m in cur_msgs
     ]
 
@@ -345,20 +313,40 @@ def save_session(
 EMBEDDINGS = None
 EMBEDDINGS_ERROR = None
 
-TEXT_SPLITTER = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-
-RAG_PROMPT = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """You are a helpful study assistant. Answer questions using ONLY the context below.
+RAG_SYSTEM_PROMPT = """You are a helpful study assistant. Answer questions using ONLY the context below.
 If the answer isn't in the context, say so honestly.
 
 Context:
-{context}""",
-    ),
-    MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{question}"),
-])
+{context}"""
+
+SUMMARIZE_PROMPT = "You are an expert summarizer. Please provide a comprehensive and concise summary of the following document:\n\n{text}"
+
+
+# ── Pure Python text splitter (replaces LangChain RecursiveCharacterTextSplitter) ─
+def split_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> list[str]:
+    """Split text into overlapping chunks, breaking at natural boundaries."""
+    if not text or not text.strip():
+        return []
+    chunks = []
+    separators = ["\n\n", "\n", ". ", " "]
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        if end >= len(text):
+            chunks.append(text[start:])
+            break
+        # Try to break at natural boundary
+        best_break = end
+        for sep in separators:
+            pos = text.rfind(sep, start + chunk_size // 2, end)
+            if pos > start:
+                best_break = pos + len(sep)
+                break
+        chunks.append(text[start:best_break])
+        start = best_break - chunk_overlap
+        if start < 0:
+            start = 0
+    return [c.strip() for c in chunks if c.strip()]
 
 
 # ── Gemini API Keys Management & Rotation ──────────────────────────────────
@@ -368,8 +356,7 @@ _current_key_index: int = 0
 def get_gemini_api_keys() -> list[str]:
     """
     Retrieve Gemini API keys from GEMINI_API_KEY environment variable.
-    Supports comma-separated, semicolon-separated, or newline-separated multiple keys
-    for quota failover (e.g. GEMINI_API_KEY="key1,key2,key3").
+    Supports comma-separated, semicolon-separated, or newline-separated multiple keys.
     """
     raw = os.getenv("GEMINI_API_KEY", "")
     if not raw:
@@ -462,10 +449,9 @@ def get_available_models(api_key: str | None = None) -> list[str]:
                         and not any(x in name_lower for x in ["tts", "embed", "imagen", "robotics", "computer-use"])
                     ):
                         discovered.append(name)
-
-                # Prioritize flash models
-                flash_models = [m for m in discovered if "flash" in m]
-                other_models = [m for m in discovered if "flash" not in m]
+                # Sort: flash models first (cheaper/faster), then others
+                flash_models = [m for m in discovered if "flash" in m.lower()]
+                other_models = [m for m in discovered if "flash" not in m.lower()]
                 sorted_models = flash_models + other_models
                 if sorted_models:
                     AVAILABLE_GEMINI_MODELS = sorted_models
@@ -479,26 +465,52 @@ def get_available_models(api_key: str | None = None) -> list[str]:
     return AVAILABLE_GEMINI_MODELS
 
 
-def get_llm(model_name: str | None = None, api_key: str | None = None) -> ChatGoogleGenerativeAI:
-    key = api_key or get_current_api_key()
-    if not key:
-        raise ValueError(
-            "GEMINI_API_KEY environment variable is not set. "
-            "Please configure GEMINI_API_KEY in Render or in your .env file."
-        )
-    if not model_name:
-        models = get_available_models(key)
-        model_name = models[0] if models else "gemini-2.5-flash"
+def generate_chat(
+    model_name: str,
+    api_key: str,
+    system_prompt: str,
+    history: list[dict],
+    user_message: str,
+) -> str:
+    """
+    Call Gemini generate_content with system prompt, chat history, and user message.
+    Returns the model's text response.
+    """
+    client = genai.Client(api_key=api_key)
 
-    return ChatGoogleGenerativeAI(
+    # Build contents list for multi-turn conversation
+    contents = []
+    for msg in history:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+    contents.append({"role": "user", "parts": [{"text": user_message}]})
+
+    response = client.models.generate_content(
         model=model_name,
-        google_api_key=key,
-        temperature=0.2,
-        request_timeout=20,
+        contents=contents,
+        config={
+            "system_instruction": system_prompt,
+            "temperature": 0.2,
+        },
     )
+    return response.text or ""
 
 
-def load_docx(path: str) -> list[Document]:
+def generate_text(model_name: str, api_key: str, prompt: str) -> str:
+    """Simple single-turn text generation with Gemini."""
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+        config={"temperature": 0.2},
+    )
+    return response.text or ""
+
+
+# ── Document loaders (direct, no LangChain) ─────────────────────────────────
+
+def load_docx(path: str) -> list[dict]:
+    """Load a DOCX file and return list of document dicts."""
     doc = docx.Document(path)
     text_parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
     for table in doc.tables:
@@ -506,7 +518,25 @@ def load_docx(path: str) -> list[Document]:
             row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
             if row_text:
                 text_parts.append(row_text)
-    return [Document(page_content="\n\n".join(text_parts), metadata={"source": path})]
+    return [{"content": "\n\n".join(text_parts), "metadata": {"source": path}}]
+
+
+def load_pdf(path: str) -> list[dict]:
+    """Load a PDF file using pypdf directly."""
+    reader = pypdf.PdfReader(path)
+    docs = []
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        if text.strip():
+            docs.append({"content": text, "metadata": {"source": path, "page": i}})
+    return docs
+
+
+def load_txt(path: str) -> list[dict]:
+    """Load a plain text file."""
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    return [{"content": text, "metadata": {"source": path}}]
 
 
 def extract_shape_images(shape):
@@ -522,7 +552,7 @@ def extract_shape_images(shape):
     return imgs
 
 
-def load_pptx(path: str, session_id: str | None = None) -> tuple[list[Document], list[dict]]:
+def load_pptx(path: str, session_id: str | None = None) -> tuple[list[dict], list[dict]]:
     # Deduce session_id from path if not explicitly passed
     if not session_id:
         norm_path = os.path.normpath(path)
@@ -624,55 +654,49 @@ def load_pptx(path: str, session_id: str | None = None) -> tuple[list[Document],
         if not title:
             title = f"Slide {slide_idx + 1}"
 
+        slide_text = "\n".join(slide_texts)
+        if notes:
+            slide_text += f"\n\nSpeaker Notes: {notes}"
+
+        docs.append({"content": slide_text, "metadata": {"source": path, "slide": slide_idx + 1}})
+
         slides_data.append({
             "slide_number": slide_idx + 1,
-            "title": title,
+            "title": title if isinstance(title, str) else title.get("text", f"Slide {slide_idx + 1}"),
             "bullets": bullets,
             "tables": tables,
             "images": images,
             "notes": notes,
-            "raw_text": "\n".join(slide_texts),
+            "raw_text": slide_text,
         })
 
-        img_context = f" [Slide contains {len(images)} figure(s)/diagram(s)]" if images else ""
-        content_for_doc = ("\n".join(slide_texts) if slide_texts else f"Slide {slide_idx + 1}: {title}") + img_context
-        docs.append(
-            Document(
-                page_content=content_for_doc,
-                metadata={"slide": slide_idx + 1, "source": path, "has_images": len(images) > 0},
-            )
-        )
     return docs, slides_data
 
 
-def load_file(path: str, ext: str, session_id: str | None = None) -> tuple[list[Document], list[dict] | None]:
+def load_file(path: str, ext: str, session_id: str | None = None) -> tuple[list[dict], list[dict] | None]:
     if ext == ".pdf":
-        return PyPDFLoader(path).load(), None
+        return load_pdf(path), None
     elif ext == ".docx":
         return load_docx(path), None
     elif ext in (".pptx", ".ppt"):
         return load_pptx(path, session_id=session_id)
     elif ext == ".txt":
-        return TextLoader(path, encoding="utf-8").load(), None
+        return load_txt(path), None
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
 
 
-def format_docs(docs):
-    return "\n\n".join(d.page_content for d in docs)
-
+# ── Embeddings ───────────────────────────────────────────────────────────────
 
 class RemoteEmbeddings:
-    """LangChain-compatible embeddings wrapper that calls the remote embedding service via HTTP."""
+    """Embeddings wrapper that calls the remote embedding service via HTTP."""
 
     def __init__(self, service_url: str):
         self.service_url = service_url.rstrip("/")
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed a list of document texts via the remote service."""
-        import urllib.request
-        import json as _json
-        payload = _json.dumps({"texts": texts}).encode("utf-8")
+        payload = json.dumps({"texts": texts}).encode("utf-8")
         req = urllib.request.Request(
             f"{self.service_url}/embed",
             data=payload,
@@ -680,7 +704,7 @@ class RemoteEmbeddings:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
-            data = _json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read().decode("utf-8"))
         return data["embeddings"]
 
     def embed_query(self, text: str) -> list[float]:
@@ -688,12 +712,36 @@ class RemoteEmbeddings:
         return self.embed_documents([text])[0]
 
 
+class GeminiEmbeddings:
+    """Lightweight embeddings using google-genai SDK directly (no LangChain)."""
+
+    def __init__(self, api_key: str, model: str = "text-embedding-004"):
+        self.client = genai.Client(api_key=api_key)
+        self.model = model
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed a list of texts using Gemini embedding API."""
+        all_embeddings = []
+        # Batch in groups of 100 (API limit)
+        for i in range(0, len(texts), 100):
+            batch = texts[i:i + 100]
+            result = self.client.models.embed_content(
+                model=self.model,
+                contents=batch,
+            )
+            all_embeddings.extend([list(e.values) for e in result.embeddings])
+        return all_embeddings
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed a single query text."""
+        return self.embed_documents([text])[0]
+
+
 def get_embeddings():
     """
     Returns an embeddings instance with fallback priority:
       1. Remote embedding service (EMBEDDING_SERVICE_URL) — 0 MB local RAM, saves tokens
-      2. Google cloud embeddings (text-embedding-004) — 0 MB local RAM, uses Gemini quota
-      3. Local FastEmbed (bge-small-en-v1.5) — ~150 MB RAM, offline fallback
+      2. Google cloud embeddings (google-genai SDK) — 0 MB extra RAM, uses Gemini quota
     """
     global EMBEDDINGS, EMBEDDINGS_ERROR
     if EMBEDDINGS is not None:
@@ -716,28 +764,59 @@ def get_embeddings():
         except Exception as remote_err:
             print(f"Notice: Remote embedding service unavailable ({remote_err}), trying cloud fallback...")
 
-    # Priority 2: Google cloud embeddings (uses Gemini API quota but 0 MB local RAM)
+    # Priority 2: Google cloud embeddings via lightweight google-genai SDK
     key = get_current_api_key()
     if key:
         try:
-            EMBEDDINGS = GoogleGenerativeAIEmbeddings(
-                model="models/text-embedding-004",
-                google_api_key=key,
-            )
-            print("Using GoogleGenerativeAIEmbeddings (cloud API, 0 MB local RAM).")
+            EMBEDDINGS = GeminiEmbeddings(api_key=key)
+            print("Using GeminiEmbeddings (google-genai SDK, 0 MB extra RAM).")
             return EMBEDDINGS
         except Exception as g_err:
-            print(f"Notice: Google embeddings init ({g_err}), falling back to local FastEmbed...")
+            EMBEDDINGS_ERROR = g_err
+            raise
 
-    # Priority 3: Local FastEmbed (last resort — adds ~150 MB RAM)
+    raise ValueError("No embedding method available. Set EMBEDDING_SERVICE_URL or GEMINI_API_KEY.")
+
+
+# ── Simple in-memory vector search (replaces ChromaDB) ──────────────────────
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def search_vectors(query_embedding: list[float], store: dict, k: int = 5) -> list[dict]:
+    """Search in-memory vector store for top-k most similar documents."""
+    if not store or "embeddings" not in store or not store["embeddings"]:
+        return []
+    scored = []
+    for i, emb in enumerate(store["embeddings"]):
+        sim = cosine_similarity(query_embedding, emb)
+        scored.append((sim, store["chunks"][i]))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item[1] for item in scored[:k]]
+
+
+def search_supabase_vectors(query_embedding: list[float], session_id: str, k: int = 5) -> list[dict]:
+    """Search Supabase pgvector using the match_documents RPC function."""
+    if not supabase_client:
+        return []
     try:
-        from langchain_community.embeddings import FastEmbedEmbeddings
-        EMBEDDINGS = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-        print("Using FastEmbedEmbeddings (local ONNX fallback, ~150MB RAM).")
-        return EMBEDDINGS
-    except Exception as exc:
-        EMBEDDINGS_ERROR = exc
-        raise
+        result = supabase_client.rpc("match_documents", {
+            "query_embedding": query_embedding,
+            "match_count": k,
+            "filter": {"metadata": {"session_id": session_id}},
+        }).execute()
+        if result.data:
+            return [{"content": r.get("content", ""), "metadata": r.get("metadata", {})} for r in result.data]
+    except Exception as err:
+        print(f"Supabase vector search error ({err})")
+    return []
 
 
 # ── Request / Response models ────────────────────────────────────────────────
@@ -851,21 +930,10 @@ def get_session_state(session_id: str):
 
 @app.on_event("startup")
 def startup_prewarm():
-    """Load sessions and optionally prewarm embeddings in background."""
+    """Load sessions on startup."""
     load_sessions_from_disk()
-
-    # Only prewarm if remote service or Gemini key is NOT available
-    # (i.e., we'd fall through to local FastEmbed which benefits from pre-warming)
-    if not EMBEDDING_SERVICE_URL and not get_gemini_api_keys():
-        def _prewarm():
-            try:
-                get_embeddings()
-                print("Local FastEmbed model pre-warmed successfully.")
-            except Exception as err:
-                print(f"Notice: FastEmbed pre-warm ({err})")
-        threading.Thread(target=_prewarm, daemon=True).start()
-    else:
-        print(f"Embeddings: {'remote service' if EMBEDDING_SERVICE_URL else 'cloud API'} configured, skipping local pre-warm.")
+    embed_mode = "remote service" if EMBEDDING_SERVICE_URL else ("cloud API" if get_gemini_api_keys() else "none")
+    print(f"Startup complete. Embeddings: {embed_mode}.")
 
 
 @app.get("/raw/{session_id}/{filename}")
@@ -972,9 +1040,9 @@ async def upload_files(
             uploaded_names.append(uf.filename)
             if slides_info:
                 session_slides.setdefault(session_id, {})[uf.filename] = slides_info
-            
+
             # Store full text for summarization
-            full_text = "\n\n".join(d.page_content for d in docs)
+            full_text = "\n\n".join(d["content"] for d in docs)
             session_docs.setdefault(session_id, {})[uf.filename] = full_text
 
             # If Supabase is connected, store the raw file in Supabase Storage
@@ -996,9 +1064,14 @@ async def upload_files(
             detail="No readable text could be extracted from the uploaded document(s). Please verify the file contains readable text.",
         )
 
-    chunks = TEXT_SPLITTER.split_documents(all_docs)
-    for c in chunks:
-        c.metadata["session_id"] = session_id
+    # Split all documents into chunks
+    all_texts = []
+    all_metadata = []
+    for d in all_docs:
+        chunks = split_text(d["content"])
+        for chunk in chunks:
+            all_texts.append(chunk)
+            all_metadata.append({**d.get("metadata", {}), "session_id": session_id})
 
     # Embedding & Indexing with Key Rotation on Rate Limit (429)
     keys = get_gemini_api_keys()
@@ -1010,38 +1083,43 @@ async def upload_files(
     for attempt in range(max_attempts):
         try:
             curr_embeddings = get_embeddings()
+            vectors = curr_embeddings.embed_documents(all_texts)
 
-            # Persist in Supabase pgvector if configured, otherwise use in-memory Chroma
+            # Persist in Supabase pgvector if configured
             if supabase_client:
                 try:
-                    supabase_vectorstore = SupabaseVectorStore(
-                        client=supabase_client,
-                        embedding=curr_embeddings,
-                        table_name="documents",
-                        query_name="match_documents",
-                    )
-                    supabase_vectorstore.add_documents(chunks)
+                    # Insert documents with embeddings into Supabase
+                    rows = []
+                    for i, (text, meta, vec) in enumerate(zip(all_texts, all_metadata, vectors)):
+                        rows.append({
+                            "content": text,
+                            "metadata": meta,
+                            "embedding": vec,
+                        })
+                    # Batch insert
+                    supabase_client.table("documents").insert(rows).execute()
                     stored_in_supabase = True
                 except Exception as err:
                     if is_rate_limit_error(err):
                         raise  # Let outer retry loop handle 429
-                    print(f"Warning: Supabase vector store insert failed ({err}), falling back to Chroma.")
+                    print(f"Warning: Supabase vector insert failed ({err}), falling back to in-memory.")
                     stored_in_supabase = False
 
             if not stored_in_supabase:
-                vector_dir = os.path.join(session_dir, "chroma_db")
-                os.makedirs(vector_dir, exist_ok=True)
+                # In-memory fallback vector store
+                if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
+                    oldest_sid = next(iter(session_vectorstores))
+                    del session_vectorstores[oldest_sid]
                 if session_id in session_vectorstores:
-                    session_vectorstores[session_id].add_texts(
-                        [c.page_content for c in chunks]
+                    session_vectorstores[session_id]["chunks"].extend(
+                        [{"content": t, "metadata": m} for t, m in zip(all_texts, all_metadata)]
                     )
+                    session_vectorstores[session_id]["embeddings"].extend(vectors)
                 else:
-                    if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
-                        oldest_sid = next(iter(session_vectorstores))
-                        del session_vectorstores[oldest_sid]
-                    session_vectorstores[session_id] = Chroma.from_documents(
-                        chunks, curr_embeddings, persist_directory=vector_dir
-                    )
+                    session_vectorstores[session_id] = {
+                        "chunks": [{"content": t, "metadata": m} for t, m in zip(all_texts, all_metadata)],
+                        "embeddings": vectors,
+                    }
 
             indexing_success = True
             break
@@ -1065,9 +1143,10 @@ async def upload_files(
         )
 
     # Clean up upload buffers and trigger garbage collection immediately
-    chunks_count = len(chunks)
+    chunks_count = len(all_texts)
     del all_docs
-    del chunks
+    del all_texts
+    del vectors
     gc.collect()
 
     session_files[session_id].extend(uploaded_names)
@@ -1121,50 +1200,23 @@ async def ask(req: AskRequest):
     if sid not in session_histories:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    retriever = None
-    if supabase_client:
-        try:
-            supabase_vectorstore = SupabaseVectorStore(
-                client=supabase_client,
-                embedding=get_embeddings(),
-                table_name="documents",
-                query_name="match_documents",
-            )
-            retriever = supabase_vectorstore.as_retriever(
-                search_kwargs={"k": 5, "filter": {"session_id": sid}}
-            )
-        except Exception as err:
-            print(f"Supabase retriever error ({err}), falling back to in-memory.")
-
-    if retriever is None:
-        vs = get_or_load_vectorstore(sid)
-        if vs is not None:
-            retriever = vs.as_retriever(search_kwargs={"k": 5})
-        else:
-            if sid not in session_histories and sid not in session_files:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No files uploaded for this session yet. Upload files first via /upload/{session_id}.",
-                )
-
-    # Build the chain with history
-    history = session_histories[sid]
-
+    # Retrieve relevant context via vector search
     retrieved_docs = []
-    if retriever:
-        try:
-            retrieved_docs = retriever.invoke(req.question)
-        except Exception as r_err:
-            print(f"Primary retriever failed ({r_err}), falling back to disk/in-memory Chroma...")
-            vs = get_or_load_vectorstore(sid)
-            if vs is not None:
-                retriever = vs.as_retriever(search_kwargs={"k": 5})
-                try:
-                    retrieved_docs = retriever.invoke(req.question)
-                except Exception as c_err:
-                    print(f"Chroma retriever notice: {c_err}")
+    try:
+        embeddings = get_embeddings()
+        query_vec = embeddings.embed_query(req.question)
 
-    context = format_docs(retrieved_docs)
+        # Try Supabase pgvector first
+        if supabase_client:
+            retrieved_docs = search_supabase_vectors(query_vec, sid, k=5)
+
+        # Fallback to in-memory vector store
+        if not retrieved_docs and sid in session_vectorstores:
+            retrieved_docs = search_vectors(query_vec, session_vectorstores[sid], k=5)
+    except Exception as r_err:
+        print(f"Vector search error ({r_err}), using raw document text fallback.")
+
+    context = "\n\n".join(d["content"] for d in retrieved_docs) if retrieved_docs else ""
     if not context and sid in session_docs:
         context = "\n\n".join(list(session_docs[sid].values()))[:4000]
 
@@ -1175,6 +1227,10 @@ async def ask(req: AskRequest):
             status_code=500,
             detail="GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in Render or in your .env file.",
         )
+
+    # Build system prompt with context
+    system_prompt = RAG_SYSTEM_PROMPT.format(context=context)
+    history = session_histories[sid]
 
     answer = None
     last_error = None
@@ -1191,13 +1247,7 @@ async def ask(req: AskRequest):
                 break
             current_key = get_current_api_key()
             try:
-                curr_llm = get_llm(m_name, api_key=current_key)
-                chain = RAG_PROMPT | curr_llm | StrOutputParser()
-                answer = chain.invoke({
-                    "context": context,
-                    "chat_history": history,
-                    "question": req.question,
-                })
+                answer = generate_chat(m_name, current_key, system_prompt, history, req.question)
                 if answer:
                     break
             except Exception as llm_err:
@@ -1219,8 +1269,8 @@ async def ask(req: AskRequest):
         raise HTTPException(status_code=500, detail=err_msg)
 
     # Persist turn to history
-    session_histories[sid].append(HumanMessage(content=req.question))
-    session_histories[sid].append(AIMessage(content=answer))
+    session_histories[sid].append({"role": "user", "content": req.question})
+    session_histories[sid].append({"role": "bot", "content": answer})
 
     # Keep last 20 messages (10 turns) to avoid token bloat
     if len(session_histories[sid]) > 20:
@@ -1311,7 +1361,7 @@ async def summarize(req: SummarizeRequest):
                 ext = os.path.splitext(found_file)[1].lower()
                 docs, _ = load_file(found_file, ext, session_id=sid)
                 if docs:
-                    text = "\n\n".join(d.page_content for d in docs)
+                    text = "\n\n".join(d["content"] for d in docs)
                     session_docs.setdefault(sid, {})[fname] = text
                     save_session(sid)
             except Exception as load_err:
@@ -1353,9 +1403,7 @@ async def summarize(req: SummarizeRequest):
             detail=f"File '{fname}' not found in session and no text could be extracted.",
         )
 
-    prompt = ChatPromptTemplate.from_template(
-        "You are an expert summarizer. Please provide a comprehensive and concise summary of the following document:\n\n{text}"
-    )
+    prompt = SUMMARIZE_PROMPT.format(text=text[:20000])
 
     models_to_try = get_available_models()[:3]
     keys = get_gemini_api_keys()
@@ -1380,9 +1428,7 @@ async def summarize(req: SummarizeRequest):
                 break
             current_key = get_current_api_key()
             try:
-                curr_llm = get_llm(m_name, api_key=current_key)
-                chain = prompt | curr_llm | StrOutputParser()
-                summary = chain.invoke({"text": text[:20000]})
+                summary = generate_text(m_name, current_key, prompt)
                 if summary:
                     break
             except Exception as e:

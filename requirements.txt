@@ -1,13 +1,9 @@
 fastapi
 uvicorn[standard]
 python-multipart
-langchain
-langchain-community
-langchain-chroma
-langchain-google-genai
-fastembed
+google-genai
 pypdf
 python-docx
 python-pptx
-chromadb
 supabase
+Pillow
