@@ -119,7 +119,11 @@ def evict_old_sessions():
 
 
 # Remote embedding service URL (defaults to deployed microservice)
-EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "https://document-ai-chatbot-7ch2.onrender.com").rstrip("/")
+_env_emb_url = os.getenv("EMBEDDING_SERVICE_URL", "").rstrip("/")
+if not _env_emb_url or "document-ai-embeddings" in _env_emb_url:
+    EMBEDDING_SERVICE_URL = "https://document-ai-chatbot-7ch2.onrender.com"
+else:
+    EMBEDDING_SERVICE_URL = _env_emb_url
 
 
 # Supabase (persistent cloud storage & pgvector)
@@ -844,36 +848,55 @@ class GeminiEmbeddings:
 
 class UnifiedEmbeddings:
     """
-    Hybrid embeddings:
-    1. Primary: Remote FastEmbed microservice (384-dim, 0 MB local RAM, matches Supabase vector(384))
-    2. Fallback: Gemini cloud embeddings (if remote is down / cold-starting)
+    Dedicated FastEmbed microservice (384-dim, 0 MB local RAM, matches Supabase vector(384)).
     """
 
     def __init__(self, remote_url: str | None = None, api_key: str | None = None):
-        self.remote_url = remote_url
-        self.api_key = api_key
-        self._remote = RemoteEmbeddings(remote_url) if remote_url else None
+        self.primary_url = (remote_url or "https://document-ai-chatbot-7ch2.onrender.com").rstrip("/")
+        self.verified_url = "https://document-ai-chatbot-7ch2.onrender.com"
+        self._remote = RemoteEmbeddings(self.primary_url)
         self._gemini = GeminiEmbeddings(api_key) if api_key else None
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        if self._remote:
+        try:
+            return self._remote.embed_documents(texts)
+        except Exception as e:
+            print(f"Embedding service ({self.primary_url}) error: {e}")
+
+        if self.primary_url != self.verified_url:
             try:
-                return self._remote.embed_documents(texts)
+                print(f"Retrying with verified 2nd microservice: {self.verified_url}")
+                return RemoteEmbeddings(self.verified_url).embed_documents(texts)
             except Exception as e:
-                print(f"Remote embedding service error ({e}), trying Gemini cloud fallback...")
+                print(f"Verified 2nd microservice error: {e}")
+
         if self._gemini:
-            return self._gemini.embed_documents(texts)
-        raise ValueError("No embedding service available. Check EMBEDDING_SERVICE_URL or GEMINI_API_KEY.")
+            try:
+                return self._gemini.embed_documents(texts)
+            except Exception as e:
+                print(f"Gemini fallback embed error: {e}")
+
+        raise ValueError("Could not embed documents. Please verify https://document-ai-chatbot-7ch2.onrender.com is reachable.")
 
     def embed_query(self, text: str) -> list[float]:
-        if self._remote:
+        try:
+            return self._remote.embed_query(text)
+        except Exception as e:
+            print(f"Embedding service query error ({self.primary_url}): {e}")
+
+        if self.primary_url != self.verified_url:
             try:
-                return self._remote.embed_query(text)
+                return RemoteEmbeddings(self.verified_url).embed_query(text)
             except Exception as e:
-                print(f"Remote embedding service error ({e}), trying Gemini cloud fallback...")
+                print(f"Verified 2nd microservice query error: {e}")
+
         if self._gemini:
-            return self._gemini.embed_query(text)
-        raise ValueError("No embedding service available. Check EMBEDDING_SERVICE_URL or GEMINI_API_KEY.")
+            try:
+                return self._gemini.embed_query(text)
+            except Exception as e:
+                print(f"Gemini fallback query error: {e}")
+
+        raise ValueError("Could not embed query. Please verify https://document-ai-chatbot-7ch2.onrender.com is reachable.")
 
 
 def get_embeddings():
