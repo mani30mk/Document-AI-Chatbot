@@ -628,40 +628,15 @@ def format_docs(docs):
     return "\n\n".join(d.page_content for d in docs)
 
 
-def get_embeddings(api_key: str | None = None):
+def get_embeddings():
     global EMBEDDINGS, EMBEDDINGS_ERROR
-
-    # If an explicit api_key is requested, build and return directly without module-level caching
-    if api_key:
-        return GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
-            google_api_key=api_key,
-        )
-
     if EMBEDDINGS is not None:
         return EMBEDDINGS
-
     if EMBEDDINGS_ERROR is not None:
         raise EMBEDDINGS_ERROR
-
-    # 1. Primary: GoogleGenerativeAIEmbeddings (cloud API, 0 MB local RAM used)
-    # Saves ~250MB RAM compared to local ONNX models, preventing Render 512MB OOM
-    key = get_current_api_key()
-    if key:
-        try:
-            EMBEDDINGS = GoogleGenerativeAIEmbeddings(
-                model="models/text-embedding-004",
-                google_api_key=key,
-            )
-            print("Using GoogleGenerativeAIEmbeddings (cloud API - 0 MB local RAM).")
-            return EMBEDDINGS
-        except Exception as g_err:
-            print(f"Notice: Google embeddings init ({g_err}), falling back to FastEmbed...")
-
-    # 2. Fallback: FastEmbedEmbeddings (local ONNX model) only if no API key is available
     try:
         EMBEDDINGS = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-        print("Using FastEmbedEmbeddings (local ONNX - ~150MB RAM).")
+        print("Using FastEmbedEmbeddings (local ONNX, offline, ~150MB RAM).")
         return EMBEDDINGS
     except Exception as exc:
         EMBEDDINGS_ERROR = exc
@@ -782,20 +757,16 @@ import threading
 
 @app.on_event("startup")
 def startup_prewarm():
-    """Load sessions and conditionally prewarm only if no cloud API key is configured."""
+    """Load sessions and prewarm local FastEmbed model in background."""
     load_sessions_from_disk()
 
-    # Only prewarm local FastEmbed if no Gemini API key is configured
-    if not get_gemini_api_keys():
-        def _prewarm():
-            try:
-                get_embeddings()
-                print("FastEmbed model pre-warmed successfully.")
-            except Exception as err:
-                print(f"Notice: FastEmbed pre-warm ({err})")
-        threading.Thread(target=_prewarm, daemon=True).start()
-    else:
-        print("Gemini API key detected: Skipping local ONNX pre-warm to conserve Render RAM.")
+    def _prewarm():
+        try:
+            get_embeddings()
+            print("FastEmbed model pre-warmed successfully.")
+        except Exception as err:
+            print(f"Notice: FastEmbed pre-warm ({err})")
+    threading.Thread(target=_prewarm, daemon=True).start()
 
 
 @app.get("/raw/{session_id}/{filename}")
@@ -930,69 +901,44 @@ async def upload_files(
     for c in chunks:
         c.metadata["session_id"] = session_id
 
-    # Embedding & Indexing with Key Rotation on Rate Limit (429)
-    keys = get_gemini_api_keys()
-    max_attempts = len(keys) if keys else 1
     stored_in_supabase = False
-    indexing_success = False
-    last_emb_error = None
+    try:
+        curr_embeddings = get_embeddings()
 
-    for attempt in range(max_attempts):
-        current_key = get_current_api_key() if keys else None
-        try:
-            curr_embeddings = get_embeddings(api_key=current_key) if current_key else get_embeddings()
-
-            # Persist in Supabase pgvector if configured, otherwise use in-memory Chroma
-            if supabase_client:
-                try:
-                    supabase_vectorstore = SupabaseVectorStore(
-                        client=supabase_client,
-                        embedding=curr_embeddings,
-                        table_name="documents",
-                        query_name="match_documents",
-                    )
-                    supabase_vectorstore.add_documents(chunks)
-                    stored_in_supabase = True
-                except Exception as err:
-                    if is_rate_limit_error(err):
-                        raise
-                    print(f"Warning: Supabase vector store insert failed ({err}), falling back to Chroma.")
-                    stored_in_supabase = False
-
-            if not stored_in_supabase:
-                vector_dir = os.path.join(session_dir, "chroma_db")
-                os.makedirs(vector_dir, exist_ok=True)
-                if session_id in session_vectorstores:
-                    session_vectorstores[session_id].add_texts(
-                        [c.page_content for c in chunks]
-                    )
-                else:
-                    if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
-                        oldest_sid = next(iter(session_vectorstores))
-                        del session_vectorstores[oldest_sid]
-                    session_vectorstores[session_id] = Chroma.from_documents(
-                        chunks, curr_embeddings, persist_directory=vector_dir
-                    )
-
-            indexing_success = True
-            break
-        except Exception as emb_err:
-            last_emb_error = emb_err
-            if is_rate_limit_error(emb_err) and keys:
-                print(f"Embedding rate limit / 429 with current key ({emb_err}). Rotating key...")
-                rotate_api_key()
-                continue
-            else:
-                print(f"Embedding / indexing error ({emb_err})")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to embed/index documents: {str(emb_err)}",
+        # Persist in Supabase pgvector if configured, otherwise use in-memory Chroma
+        if supabase_client:
+            try:
+                supabase_vectorstore = SupabaseVectorStore(
+                    client=supabase_client,
+                    embedding=curr_embeddings,
+                    table_name="documents",
+                    query_name="match_documents",
                 )
+                supabase_vectorstore.add_documents(chunks)
+                stored_in_supabase = True
+            except Exception as err:
+                print(f"Warning: Supabase vector store insert failed ({err}), falling back to Chroma.")
+                stored_in_supabase = False
 
-    if not indexing_success:
+        if not stored_in_supabase:
+            vector_dir = os.path.join(session_dir, "chroma_db")
+            os.makedirs(vector_dir, exist_ok=True)
+            if session_id in session_vectorstores:
+                session_vectorstores[session_id].add_texts(
+                    [c.page_content for c in chunks]
+                )
+            else:
+                if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
+                    oldest_sid = next(iter(session_vectorstores))
+                    del session_vectorstores[oldest_sid]
+                session_vectorstores[session_id] = Chroma.from_documents(
+                    chunks, curr_embeddings, persist_directory=vector_dir
+                )
+    except Exception as emb_err:
+        print(f"Embedding / indexing error ({emb_err})")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to embed documents after rotating API keys: {str(last_emb_error)}",
+            detail=f"Failed to embed/index documents: {str(emb_err)}",
         )
 
     # Clean up upload buffers and trigger garbage collection immediately
