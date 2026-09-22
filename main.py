@@ -393,7 +393,7 @@ def rotate_api_key() -> str | None:
 
 
 def is_rate_limit_error(exc: Exception) -> bool:
-    """Detect if an exception is due to 429 quota exhaustion or rate limiting."""
+    """Detect if an exception is due to 429 quota exhaustion or 503 high demand / model overloaded."""
     msg = str(exc).lower()
     return any(
         s in msg
@@ -405,6 +405,12 @@ def is_rate_limit_error(exc: Exception) -> bool:
             "rate limit",
             "ratelimit",
             "too many requests",
+            "503",
+            "high demand",
+            "overloaded",
+            "temporarily unavailable",
+            "service unavailable",
+            "capacity",
         ]
     )
 
@@ -413,17 +419,15 @@ AVAILABLE_GEMINI_MODELS: list[str] = []
 
 
 def get_available_models(api_key: str | None = None) -> list[str]:
-    """Query Google API for active models supporting generateContent for Gemini API key."""
+    """Query Google API for active models, prioritizing reliable production models first."""
     global AVAILABLE_GEMINI_MODELS
     if AVAILABLE_GEMINI_MODELS:
         return AVAILABLE_GEMINI_MODELS
 
     candidates = [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite",
         "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-8b",
         "gemini-1.5-pro",
     ]
 
@@ -446,13 +450,23 @@ def get_available_models(api_key: str | None = None) -> list[str]:
                     if (
                         "generateContent" in methods
                         and "gemini" in name_lower
-                        and not any(x in name_lower for x in ["tts", "embed", "imagen", "robotics", "computer-use"])
+                        and not any(x in name_lower for x in ["tts", "embed", "imagen", "robotics", "computer-use", "thinking", "preview", "exp"])
                     ):
                         discovered.append(name)
-                # Sort: flash models first (cheaper/faster), then others
-                flash_models = [m for m in discovered if "flash" in m.lower()]
-                other_models = [m for m in discovered if "flash" not in m.lower()]
-                sorted_models = flash_models + other_models
+
+                # Prioritize: gemini-1.5-flash first, then other stable models
+                preferred_order = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro"]
+                sorted_models = []
+                for p in preferred_order:
+                    if p in discovered and p not in sorted_models:
+                        sorted_models.append(p)
+                for d in discovered:
+                    if d not in sorted_models:
+                        sorted_models.append(d)
+                for c in candidates:
+                    if c not in sorted_models:
+                        sorted_models.append(c)
+
                 if sorted_models:
                     AVAILABLE_GEMINI_MODELS = sorted_models
                     print(f"Discovered {len(AVAILABLE_GEMINI_MODELS)} available Gemini models: {AVAILABLE_GEMINI_MODELS[:5]}")
@@ -474,16 +488,29 @@ def generate_chat(
 ) -> str:
     """
     Call Gemini generate_content with system prompt, chat history, and user message.
-    Returns the model's text response.
+    Ensures strict turn alternation (user -> model -> user) to avoid 400 Bad Request.
     """
     client = genai.Client(api_key=api_key)
 
-    # Build contents list for multi-turn conversation
+    # Build contents list ensuring strict alternation between user and model
     contents = []
+    last_role = None
     for msg in history:
-        role = "user" if msg["role"] == "user" else "model"
-        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-    contents.append({"role": "user", "parts": [{"text": user_message}]})
+        role = "user" if msg.get("role") in ["user", "human"] else "model"
+        text = (msg.get("content") or "").strip()
+        if not text:
+            continue
+        if role == last_role:
+            contents[-1]["parts"][0]["text"] += "\n\n" + text
+        else:
+            contents.append({"role": role, "parts": [{"text": text}]})
+            last_role = role
+
+    # Append current user question
+    if contents and contents[-1]["role"] == "user":
+        contents[-1]["parts"][0]["text"] += "\n\n" + user_message
+    else:
+        contents.append({"role": "user", "parts": [{"text": user_message}]})
 
     response = client.models.generate_content(
         model=model_name,
@@ -1244,7 +1271,7 @@ async def ask(req: AskRequest):
     if not context and sid in session_docs:
         context = "\n\n".join(list(session_docs[sid].values()))[:4000]
 
-    models_to_try = get_available_models()[:3]
+    models_to_try = get_available_models()[:5]
     keys = get_gemini_api_keys()
     if not keys:
         raise HTTPException(
@@ -1277,9 +1304,12 @@ async def ask(req: AskRequest):
             except Exception as llm_err:
                 last_error = llm_err
                 if is_rate_limit_error(llm_err):
-                    print(f"Rate limit / 429 on model {m_name} with current key: {llm_err}. Rotating key...")
-                    rotate_api_key()
-                    continue
+                    print(f"Transient error (quota/high demand) on model {m_name}: {llm_err}. Trying next...")
+                    if len(keys) > 1:
+                        rotate_api_key()
+                        continue
+                    else:
+                        break  # Immediately try next candidate model
                 else:
                     print(f"Model {m_name} failed ({llm_err}), falling back to next model candidate...")
                     break
@@ -1429,7 +1459,7 @@ async def summarize(req: SummarizeRequest):
 
     prompt = SUMMARIZE_PROMPT.format(text=text[:20000])
 
-    models_to_try = get_available_models()[:3]
+    models_to_try = get_available_models()[:5]
     keys = get_gemini_api_keys()
     if not keys:
         raise HTTPException(
@@ -1458,9 +1488,12 @@ async def summarize(req: SummarizeRequest):
             except Exception as e:
                 last_error = e
                 if is_rate_limit_error(e):
-                    print(f"Summarize rate limit / 429 on model {m_name} with current key: {e}. Rotating key...")
-                    rotate_api_key()
-                    continue
+                    print(f"Summarize transient error (quota/high demand) on model {m_name}: {e}. Trying next...")
+                    if len(keys) > 1:
+                        rotate_api_key()
+                        continue
+                    else:
+                        break  # Try next model candidate
                 else:
                     print(f"Summarize model {m_name} failed ({e}), falling back to next model candidate...")
                     break
