@@ -444,15 +444,17 @@ def get_available_models(api_key: str | None = None) -> list[str]:
         return AVAILABLE_GEMINI_MODELS
 
     candidates = [
-        "gemini-1.5-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemini-flash-lite-latest",
         "gemini-2.0-flash",
-        "gemini-1.5-flash-8b",
-        "gemini-1.5-pro",
     ]
 
     keys = [api_key] if api_key else get_gemini_api_keys()
     if not keys:
-        return candidates
+        non_pro = [m for m in candidates if "pro" not in m.lower()]
+        pro = [m for m in candidates if "pro" in m.lower()]
+        return non_pro + pro
 
     for key in keys:
         try:
@@ -473,8 +475,13 @@ def get_available_models(api_key: str | None = None) -> list[str]:
                     ):
                         discovered.append(name)
 
-                # Prioritize: gemini-1.5-flash first, then other stable models
-                preferred_order = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro"]
+                # Prioritize: fast flash models first, then other stable models
+                preferred_order = [
+                    "gemini-flash-latest",
+                    "gemini-2.5-flash",
+                    "gemini-flash-lite-latest",
+                    "gemini-2.0-flash",
+                ]
                 sorted_models = []
                 for p in preferred_order:
                     if p in discovered and p not in sorted_models:
@@ -486,6 +493,11 @@ def get_available_models(api_key: str | None = None) -> list[str]:
                     if c not in sorted_models:
                         sorted_models.append(c)
 
+                # Push any "pro" models to the end
+                non_pro = [m for m in sorted_models if "pro" not in m.lower()]
+                pro = [m for m in sorted_models if "pro" in m.lower()]
+                sorted_models = non_pro + pro
+
                 if sorted_models:
                     AVAILABLE_GEMINI_MODELS = sorted_models
                     print(f"Discovered {len(AVAILABLE_GEMINI_MODELS)} available Gemini models: {AVAILABLE_GEMINI_MODELS[:5]}")
@@ -494,7 +506,9 @@ def get_available_models(api_key: str | None = None) -> list[str]:
             print(f"Notice: Model discovery via API key ({e}), trying next candidate/defaults.")
             continue
 
-    AVAILABLE_GEMINI_MODELS = candidates
+    non_pro = [m for m in candidates if "pro" not in m.lower()]
+    pro = [m for m in candidates if "pro" in m.lower()]
+    AVAILABLE_GEMINI_MODELS = non_pro + pro
     return AVAILABLE_GEMINI_MODELS
 
 
@@ -504,6 +518,7 @@ def generate_chat(
     system_prompt: str,
     history: list[dict],
     user_message: str,
+    timeout_s: float = 25.0,
 ) -> str:
     """
     Call Gemini generate_content with system prompt, chat history, and user message.
@@ -511,7 +526,7 @@ def generate_chat(
     """
     client = genai.Client(
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=25.0),
+        http_options=types.HttpOptions(timeout=int(timeout_s * 1000)),  # SDK expects milliseconds
     )
 
     # Build contents list ensuring strict alternation between user and model
@@ -554,11 +569,11 @@ def generate_chat(
     return response.text or ""
 
 
-def generate_text(model_name: str, api_key: str, prompt: str) -> str:
+def generate_text(model_name: str, api_key: str, prompt: str, timeout_s: float = 25.0) -> str:
     """Simple single-turn text generation with Gemini."""
     client = genai.Client(
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=25.0),
+        http_options=types.HttpOptions(timeout=int(timeout_s * 1000)),  # SDK expects milliseconds
     )
     config_kwargs = {
         "temperature": 0.2,
@@ -1338,16 +1353,18 @@ async def ask(req: AskRequest):
     MAX_BUDGET_SECONDS = 35.0
 
     for m_name in models_to_try:
-        if time.monotonic() - start_time >= MAX_BUDGET_SECONDS:
-            print(f"Time budget exceeded ({time.monotonic() - start_time:.1f}s), breaking model loop in /ask...")
+        remaining = MAX_BUDGET_SECONDS - (time.monotonic() - start_time)
+        if remaining <= 2:
+            print(f"Time budget exceeded ({MAX_BUDGET_SECONDS - remaining:.1f}s), breaking model loop in /ask...")
             break
         for _ in range(len(keys)):
-            if time.monotonic() - start_time >= MAX_BUDGET_SECONDS:
-                print(f"Time budget exceeded ({time.monotonic() - start_time:.1f}s), breaking key loop in /ask...")
+            remaining = MAX_BUDGET_SECONDS - (time.monotonic() - start_time)
+            if remaining <= 2:
+                print(f"Time budget exceeded ({MAX_BUDGET_SECONDS - remaining:.1f}s), breaking key loop in /ask...")
                 break
             current_key = get_current_api_key()
             try:
-                answer = generate_chat(m_name, current_key, system_prompt, history, req.question)
+                answer = generate_chat(m_name, current_key, system_prompt, history, req.question, timeout_s=min(remaining, 15.0))
                 if answer:
                     break
             except Exception as llm_err:
@@ -1522,16 +1539,18 @@ async def summarize(req: SummarizeRequest):
     MAX_BUDGET_SECONDS = 35.0
 
     for m_name in models_to_try:
-        if time.monotonic() - start_time >= MAX_BUDGET_SECONDS:
-            print(f"Time budget exceeded ({time.monotonic() - start_time:.1f}s), breaking model loop in /summarize...")
+        remaining = MAX_BUDGET_SECONDS - (time.monotonic() - start_time)
+        if remaining <= 2:
+            print(f"Time budget exceeded ({MAX_BUDGET_SECONDS - remaining:.1f}s), breaking model loop in /summarize...")
             break
         for _ in range(len(keys)):
-            if time.monotonic() - start_time >= MAX_BUDGET_SECONDS:
-                print(f"Time budget exceeded ({time.monotonic() - start_time:.1f}s), breaking key loop in /summarize...")
+            remaining = MAX_BUDGET_SECONDS - (time.monotonic() - start_time)
+            if remaining <= 2:
+                print(f"Time budget exceeded ({MAX_BUDGET_SECONDS - remaining:.1f}s), breaking key loop in /summarize...")
                 break
             current_key = get_current_api_key()
             try:
-                summary = generate_text(m_name, current_key, prompt)
+                summary = generate_text(m_name, current_key, prompt, timeout_s=min(remaining, 15.0))
                 if summary:
                     break
             except Exception as e:
