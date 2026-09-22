@@ -4,122 +4,52 @@ A modern, full-stack Retrieval-Augmented Generation (RAG) application that allow
 
 ---
 
-## 🏗️ System Architecture
+## 🏗️ System Workflows
 
-The application is built using a decoupled **Two-Service Microservice Architecture** designed to maximize speed, save API token costs, and stay well within free-tier cloud limits:
+To keep the architecture clean and easy to understand, the system is divided into two separate, dedicated pipelines:
 
-```mermaid
-graph TD
-%% Layer 1: Client & Presentation
-    subgraph ClientLayer ["1. Presentation Layer (Client Browser)"]
-        UI["Web UI & Document Viewer<br/>• Native PDF / Slide Preview<br/>• Real-time Progress Tracking<br/>• Markdown Chat & Video Cards"]
-    end
-
-%% Layer 2: API & Application Engine
-    subgraph AppLayer ["2. Application Layer (FastAPI Backend)"]
-        Gateway["FastAPI Gateway & Session Manager"]
-        Parser["Document Extraction & Chunking<br/>• Parsers: pypdf, python-docx, python-pptx<br/>• Chunking: 1000 chars / 200 overlap"]
-        RAG["RAG Orchestrator<br/>• Semantic Context Retrieval<br/>• Dynamic Prompt Engineering"]
-        YT["Recommendation Engine<br/>• Academic Subject Extraction<br/>• Educational Video Discovery"]
-    end
-
-%% Layer 3: Vectorization Microservice
-    subgraph Microservice ["3. Dedicated Embedding Microservice (FastEmbed ONNX)"]
-        EmbedAPI["Embedding API (FastAPI)"]
-        ONNX["BAAI/bge-small-en-v1.5 Model<br/>• 384-Dimensional Vectors<br/>• 0 External API Tokens Used"]
-    end
-
-%% Layer 4: AI & Persistence Layer
-    subgraph CloudLayer ["4. Intelligence & Persistence Layer"]
-        Gemini["Google Gemini LLM<br/>• Primary: gemini-2.5-flash<br/>• Fallback: gemini-1.5-flash<br/>• Key-Rotation on Rate Limits (429)"]
-        Supabase["Supabase Cloud Database<br/>• pgvector Cosine Similarity Search<br/>• Raw Document Storage Bucket"]
-    end
-
-%% Ingestion Flow (Solid Lines)
-    UI ==>|"1. Upload File (.pdf, .docx, .pptx)"| Gateway
-    Gateway --> Parser
-    Parser -->|"Micro-Batched Chunks (12/req)"| EmbedAPI
-    EmbedAPI --> ONNX
-    ONNX -->|"384-d Dense Vectors"| EmbedAPI
-    EmbedAPI -->|"Vector Embeddings"| Gateway
-    Gateway ==>|"Index Vectors & Chunks"| Supabase
-
-%% Query Flow (Dotted Lines)
-    UI -.->|"2. Ask Question"| Gateway
-    Gateway -.-> RAG
-    RAG -.->|"Embed Query"| EmbedAPI
-    RAG -.->|"Cosine Top-K Search"| Supabase
-    Supabase -.->|"Relevant Context"| RAG
-    RAG -.->|"Augmented Prompt"| Gemini
-    Gemini -.->|"Grounded Answer"| RAG
-    RAG -.-> YT
-    YT -.->|"Lecture Video Cards"| Gateway
-    Gateway -.->|"Answer + Citations + Videos"| UI
-
-%% Styling
-    classDef client fill:#1e293b,stroke:#6366f1,stroke-width:2px,color:#f8fafc;
-    classDef app fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
-    classDef service fill:#0f172a,stroke:#34d399,stroke-width:2px,color:#f8fafc;
-    classDef cloud fill:#0f172a,stroke:#f59e0b,stroke-width:2px,color:#f8fafc;
-
-    class UI client;
-    class Gateway,Parser,RAG,YT app;
-    class EmbedAPI,ONNX service;
-    class Gemini,Supabase cloud;
-```
-
----
-
-## 🔄 End-to-End Processing Flowcharts
-
-### 1. Document Ingestion & Vector Indexing Pipeline
-
-When you upload a document, it is automatically processed, parsed, chunked, and vectorized:
+### 1. Document Ingestion & Indexing Pipeline (Write Path)
+How files are parsed, chunked, and stored as searchable vector embeddings without incurring API costs:
 
 ```mermaid
 flowchart LR
-    A["📄 Upload File<br/>(.pdf, .docx, .pptx, .txt)"] --> B["🔍 Extract Text & Metadata"]
-    B --> C["✂️ Split into Chunks<br/>(Chunk Size: 500, Overlap: 50)"]
-    C --> D["⚡ Send Micro-Batches<br/>(8 chunks per HTTP request)"]
-    D --> E["🧠 Generate Embeddings<br/>(FastEmbed ONNX 384-d)"]
-    E --> F["💾 Save to Vector Store<br/>(Supabase pgvector / Memory)"]
-    F --> G["✅ Document Ready for Chat"]
+    A["👤 User<br/>(Browser)"] -->|"1. Upload Document<br/>(PDF, PPTX, DOCX)"| B["⚙️ Backend Server<br/>(FastAPI)"]
+    B -->|"2. Extract & Split<br/>(1000 chars / 200 overlap)"| C["✂️ Text Chunker"]
+    C -->|"3. Micro-Batches<br/>(12 chunks / req)"| D["⚡ Embedding Microservice<br/>(FastEmbed ONNX 384-d)"]
+    D -->|"4. Dense Vectors<br/>(0 Gemini API Cost)"| B
+    B -->|"5. Store Embeddings & Chunks"| E[("💾 Supabase<br/>(pgvector)")]
 
-    style A fill:#4f46e5,stroke:#312e81,color:#fff
-    style D fill:#0284c7,stroke:#0369a1,color:#fff
-    style E fill:#059669,stroke:#047857,color:#fff
-    style G fill:#16a34a,stroke:#15803d,color:#fff
+    style A fill:#1e293b,stroke:#6366f1,stroke-width:2px,color:#fff
+    style B fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#fff
+    style C fill:#0f172a,stroke:#38bdf8,stroke-width:1.5px,color:#fff
+    style D fill:#0f172a,stroke:#34d399,stroke-width:2px,color:#fff
+    style E fill:#0f172a,stroke:#f59e0b,stroke-width:2px,color:#fff
 ```
 
 ---
 
-### 2. Question Answering (RAG) & YouTube Recommendations
-
-When you ask a question, the assistant retrieves relevant context, queries the LLM, and discovers educational video tutorials:
+### 2. Question Answering & Retrieval Pipeline (Read / RAG Path)
+How questions are vectorized, matched against relevant document context, synthesized by Gemini, and paired with educational video recommendations:
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor User as 👤 User
-    participant Frontend as 🖥️ Frontend (UI)
-    participant Backend as ⚙️ Backend (FastAPI)
-    participant Embedder as ⚡ Embedding Service
-    participant VectorDB as 💾 Vector Store
-    participant Gemini as 🤖 Google Gemini
-    participant YouTube as 📺 YouTube Search
+flowchart LR
+    U["👤 User<br/>(Chat Query)"] -->|"1. Question"| S["⚙️ RAG Orchestrator<br/>(FastAPI)"]
+    S -->|"2. Vectorize Query"| EM["⚡ FastEmbed<br/>Microservice"]
+    EM -->|"3. Query Vector"| S
+    S -->|"4. Cosine Match (Top-K)"| DB[("💾 Supabase<br/>(pgvector)")]
+    DB -->|"5. Retrieved Context"| S
+    S -->|"6. Context + Prompt"| G["🤖 Google Gemini<br/>(gemini-2.5-flash)"]
+    G -->|"7. Grounded Answer"| S
+    S -->|"8. Search Academic Topic"| YT["📺 YouTube Search"]
+    YT -->|"9. Tutorial Videos"| S
+    S -->|"10. Answer + Citations + Videos"| U
 
-    User->>Frontend: Asks question (e.g. "What is backpropagation?")
-    Frontend->>Backend: POST /ask {session_id, question}
-    Backend->>Embedder: POST /embed {texts: [question]}
-    Embedder-->>Backend: Return 384-d question vector
-    Backend->>VectorDB: Query top-K similar document chunks
-    VectorDB-->>Backend: Return most relevant context passages
-    Backend->>Gemini: Stream prompt (Question + Retrieved Context)
-    Gemini-->>Backend: Answer text + Academic Subject tag
-    Backend->>YouTube: Query educational tutorial videos for subject
-    YouTube-->>Backend: Top relevant lecture video cards
-    Backend-->>Frontend: Return Answer + YouTube Videos + Citations
-    Frontend->>User: Display formatted markdown answer & video cards
+    style U fill:#1e293b,stroke:#6366f1,stroke-width:2px,color:#fff
+    style S fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#fff
+    style EM fill:#0f172a,stroke:#34d399,stroke-width:2px,color:#fff
+    style DB fill:#0f172a,stroke:#f59e0b,stroke-width:2px,color:#fff
+    style G fill:#0f172a,stroke:#a855f7,stroke-width:2px,color:#fff
+    style YT fill:#0f172a,stroke:#ef4444,stroke-width:2px,color:#fff
 ```
 
 ---
