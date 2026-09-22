@@ -33,12 +33,12 @@ _embeddings = None
 
 
 def get_model():
-    """Lazy-load FastEmbedEmbeddings on first use to avoid import-time RAM spike."""
+    """Lazy-load direct FastEmbed TextEmbedding (pure ONNX, ~42 MB RAM, zero LangChain)."""
     global _embeddings
     if _embeddings is None:
-        from langchain_community.embeddings import FastEmbedEmbeddings
-        _embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-        print("FastEmbed model loaded (BAAI/bge-small-en-v1.5, 384-dim).")
+        from fastembed import TextEmbedding
+        _embeddings = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        print("FastEmbed model loaded (BAAI/bge-small-en-v1.5, 384-dim, direct ONNX).")
     return _embeddings
 
 
@@ -75,13 +75,13 @@ def embed(req: EmbedRequest):
     start = time.monotonic()
     try:
         model = get_model()
-        vectors = model.embed_documents(req.texts)
+        vectors = [v.tolist() for v in model.embed(req.texts, batch_size=32)]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Embedding error: {str(e)}")
 
     elapsed = time.monotonic() - start
     dims = len(vectors[0]) if vectors else 0
-    print(f"Embedded {len(req.texts)} texts → {dims}-dim in {elapsed:.2f}s")
+    print(f"Embedded {len(req.texts)} texts -> {dims}-dim in {elapsed:.2f}s")
 
     return EmbedResponse(
         embeddings=vectors,

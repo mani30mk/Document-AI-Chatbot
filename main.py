@@ -687,26 +687,29 @@ def load_pptx(path: str, session_id: str | None = None) -> tuple[list[dict], lis
                         break
                     try:
                         pil_img = Image.open(io.BytesIO(img.blob))
-                        if pil_img.width > 500:
-                            ratio = 500 / pil_img.width
-                            new_size = (500, int(pil_img.height * ratio))
-                            pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
-                        pil_format = "PNG" if pil_img.mode in ("RGBA", "P") else "JPEG"
+                        try:
+                            if pil_img.width > 500:
+                                ratio = 500 / pil_img.width
+                                new_size = (500, int(pil_img.height * ratio))
+                                pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
+                            pil_format = "PNG" if pil_img.mode in ("RGBA", "P") else "JPEG"
 
-                        if session_id:
-                            img_dir = os.path.join(UPLOAD_DIR, session_id, "slide_images")
-                            os.makedirs(img_dir, exist_ok=True)
-                            ext_name = "png" if pil_format == "PNG" else "jpg"
-                            img_filename = f"slide_{slide_idx + 1}_img_{len(images) + 1}.{ext_name}"
-                            img_file_path = os.path.join(img_dir, img_filename)
-                            pil_img.save(img_file_path, format=pil_format, quality=85)
-                            images.append(f"/slide_image/{session_id}/{img_filename}")
-                        else:
-                            buf = io.BytesIO()
-                            pil_img.save(buf, format=pil_format, quality=85)
-                            b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
-                            mime = f"image/{pil_format.lower()}"
-                            images.append(f"data:{mime};base64,{b64_str}")
+                            if session_id:
+                                img_dir = os.path.join(UPLOAD_DIR, session_id, "slide_images")
+                                os.makedirs(img_dir, exist_ok=True)
+                                ext_name = "png" if pil_format == "PNG" else "jpg"
+                                img_filename = f"slide_{slide_idx + 1}_img_{len(images) + 1}.{ext_name}"
+                                img_file_path = os.path.join(img_dir, img_filename)
+                                pil_img.save(img_file_path, format=pil_format, quality=85)
+                                images.append(f"/slide_image/{session_id}/{img_filename}")
+                            else:
+                                buf = io.BytesIO()
+                                pil_img.save(buf, format=pil_format, quality=85)
+                                b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
+                                mime = f"image/{pil_format.lower()}"
+                                images.append(f"data:{mime};base64,{b64_str}")
+                        finally:
+                            pil_img.close()
                     except Exception as img_err:
                         print(f"Notice: Image extraction ({img_err})")
             except Exception:
@@ -741,6 +744,8 @@ def load_pptx(path: str, session_id: str | None = None) -> tuple[list[dict], lis
             "raw_text": slide_text,
         })
 
+    prs = None
+    gc.collect()
     return docs, slides_data
 
 
