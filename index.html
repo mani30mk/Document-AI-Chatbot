@@ -1412,6 +1412,20 @@ function getApiBase() {
 
 let API_BASE = getApiBase();
 
+// Embedding service URL — set this to your Render embedding service URL
+// When empty, warm-on-demand only pings the main app
+const EMBED_SERVICE_URL = '';  // e.g. 'https://document-ai-embeddings.onrender.com'
+
+/** Fire-and-forget wake-up pings to embedding service + main app */
+function warmUpServices() {
+  // Wake main app
+  fetch(`${API_BASE}/health`).catch(() => {});
+  // Wake embedding service (if configured)
+  if (EMBED_SERVICE_URL) {
+    fetch(`${EMBED_SERVICE_URL}/health`).catch(() => {});
+  }
+}
+
 // ── State ─────────────────────────────────────────────────
 let sessionId = null;
 let chatOpen = false;
@@ -1662,6 +1676,7 @@ function setStatus(ok) {
 const EXT_ICONS = { pdf:'📄', docx:'📝', pptx:'📊', txt:'🗒️' };
 
 document.getElementById('fileInput').addEventListener('change', async function () {
+  warmUpServices();  // Wake up services while files are being read
   await uploadFiles(Array.from(this.files));
   this.value = '';
 });
@@ -1671,6 +1686,7 @@ zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add(
 zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
 zone.addEventListener('drop', async e => {
   e.preventDefault(); zone.classList.remove('drag');
+  warmUpServices();  // Wake up services while files are being read
   await uploadFiles(Array.from(e.dataTransfer.files));
 });
 

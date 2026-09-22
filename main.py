@@ -24,7 +24,6 @@ from pydantic import BaseModel
 
 # ── LangChain imports ───────────────────────────────────────────────────────
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
 import docx
@@ -43,6 +42,7 @@ import base64
 import io
 import gc
 import time
+import threading
 from datetime import datetime, timezone
 from PIL import Image
 import urllib.request
@@ -72,14 +72,42 @@ UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploaded_docs")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 SESSIONS_FILE = os.path.join(UPLOAD_DIR, "sessions.json")
 
-# In-memory session fallbacks (capped to 3 active vectorstores to conserve Render 512MB RAM)
-MAX_CACHED_VECTORSTORES = 3
+# In-memory session fallbacks (capped to 1 active vectorstore to conserve Render 512MB RAM)
+MAX_CACHED_VECTORSTORES = 1
 session_vectorstores: dict[str, Chroma] = {}
 session_histories: dict[str, list] = {}
 session_files: dict[str, list[str]] = {}
 session_docs: dict[str, dict[str, str]] = {}
 session_slides: dict[str, dict[str, list]] = {}
 session_api_keys: dict[str, str] = {}
+
+# Bounded session cache — evict oldest when exceeding limit (re-hydrated from Supabase on demand)
+MAX_CACHED_SESSIONS = 5
+session_access_order: list[str] = []  # most-recent at end
+
+
+def touch_session(session_id: str):
+    """Mark a session as recently used (move to end of access order)."""
+    if session_id in session_access_order:
+        session_access_order.remove(session_id)
+    session_access_order.append(session_id)
+
+
+def evict_old_sessions():
+    """Evict oldest sessions from in-memory dicts when cache exceeds MAX_CACHED_SESSIONS."""
+    while len(session_access_order) > MAX_CACHED_SESSIONS:
+        oldest = session_access_order.pop(0)
+        session_histories.pop(oldest, None)
+        session_files.pop(oldest, None)
+        session_docs.pop(oldest, None)
+        session_slides.pop(oldest, None)
+        session_api_keys.pop(oldest, None)
+        gc.collect()
+        print(f"Evicted session {oldest[:8]}… from in-memory cache (will re-hydrate from Supabase on demand).")
+
+
+# Remote embedding service URL (set via env var when using two-service architecture)
+EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "").rstrip("/")
 
 
 def get_or_load_vectorstore(session_id: str) -> Chroma | None:
@@ -301,11 +329,15 @@ def save_session(
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             supabase_client.table("chat_sessions").upsert(payload).execute()
+            # Evict old sessions after successful Supabase persist
+            touch_session(session_id)
+            evict_old_sessions()
             return
         except Exception as err:
             print(f"Notice: Supabase save_session error ({err}), falling back to disk...")
 
     # 2. Dev fallback: Save to local JSON disk file (not used in production)
+    touch_session(session_id)
     save_sessions_to_disk()
 
 
@@ -360,12 +392,14 @@ def get_current_api_key() -> str | None:
 
 
 def rotate_api_key() -> str | None:
-    """Rotate to the next API key in round-robin fashion."""
+    """Rotate to the next API key in round-robin fashion. Resets cached embeddings."""
+    global _current_key_index, EMBEDDINGS
     keys = get_gemini_api_keys()
     if not keys:
         return None
-    global _current_key_index
     _current_key_index = (_current_key_index + 1) % len(keys)
+    # Reset cached embeddings so get_embeddings() picks up the new key
+    EMBEDDINGS = None
     masked = keys[_current_key_index][:6] + "..." + keys[_current_key_index][-4:] if len(keys[_current_key_index]) > 10 else "***"
     print(f"Rotated to API key #{_current_key_index + 1}/{len(keys)} ({masked})")
     return keys[_current_key_index]
@@ -548,13 +582,13 @@ def load_pptx(path: str, session_id: str | None = None) -> tuple[list[Document],
                 # Extract pictures/images
                 shape_imgs = extract_shape_images(shape)
                 for img in shape_imgs:
-                    if len(images) >= 4:  # Cap at 4 images per slide
+                    if len(images) >= 2:  # Cap at 2 images per slide (reduce RAM)
                         break
                     try:
                         pil_img = Image.open(io.BytesIO(img.blob))
-                        if pil_img.width > 900:
-                            ratio = 900 / pil_img.width
-                            new_size = (900, int(pil_img.height * ratio))
+                        if pil_img.width > 500:
+                            ratio = 500 / pil_img.width
+                            new_size = (500, int(pil_img.height * ratio))
                             pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
                         pil_format = "PNG" if pil_img.mode in ("RGBA", "P") else "JPEG"
 
@@ -628,15 +662,78 @@ def format_docs(docs):
     return "\n\n".join(d.page_content for d in docs)
 
 
+class RemoteEmbeddings:
+    """LangChain-compatible embeddings wrapper that calls the remote embedding service via HTTP."""
+
+    def __init__(self, service_url: str):
+        self.service_url = service_url.rstrip("/")
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed a list of document texts via the remote service."""
+        import urllib.request
+        import json as _json
+        payload = _json.dumps({"texts": texts}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.service_url}/embed",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        return data["embeddings"]
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed a single query text via the remote service."""
+        return self.embed_documents([text])[0]
+
+
 def get_embeddings():
+    """
+    Returns an embeddings instance with fallback priority:
+      1. Remote embedding service (EMBEDDING_SERVICE_URL) — 0 MB local RAM, saves tokens
+      2. Google cloud embeddings (text-embedding-004) — 0 MB local RAM, uses Gemini quota
+      3. Local FastEmbed (bge-small-en-v1.5) — ~150 MB RAM, offline fallback
+    """
     global EMBEDDINGS, EMBEDDINGS_ERROR
     if EMBEDDINGS is not None:
         return EMBEDDINGS
     if EMBEDDINGS_ERROR is not None:
         raise EMBEDDINGS_ERROR
+
+    # Priority 1: Remote embedding service (separate Render instance)
+    if EMBEDDING_SERVICE_URL:
+        try:
+            # Quick health check to verify service is reachable
+            health_req = urllib.request.Request(
+                f"{EMBEDDING_SERVICE_URL}/health",
+                headers={"User-Agent": "DocumentAI/1.0"},
+            )
+            urllib.request.urlopen(health_req, timeout=5)
+            EMBEDDINGS = RemoteEmbeddings(EMBEDDING_SERVICE_URL)
+            print(f"Using remote embedding service at {EMBEDDING_SERVICE_URL} (0 MB local RAM, saves tokens).")
+            return EMBEDDINGS
+        except Exception as remote_err:
+            print(f"Notice: Remote embedding service unavailable ({remote_err}), trying cloud fallback...")
+
+    # Priority 2: Google cloud embeddings (uses Gemini API quota but 0 MB local RAM)
+    key = get_current_api_key()
+    if key:
+        try:
+            EMBEDDINGS = GoogleGenerativeAIEmbeddings(
+                model="models/text-embedding-004",
+                google_api_key=key,
+            )
+            print("Using GoogleGenerativeAIEmbeddings (cloud API, 0 MB local RAM).")
+            return EMBEDDINGS
+        except Exception as g_err:
+            print(f"Notice: Google embeddings init ({g_err}), falling back to local FastEmbed...")
+
+    # Priority 3: Local FastEmbed (last resort — adds ~150 MB RAM)
     try:
+        from langchain_community.embeddings import FastEmbedEmbeddings
         EMBEDDINGS = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-        print("Using FastEmbedEmbeddings (local ONNX, offline, ~150MB RAM).")
+        print("Using FastEmbedEmbeddings (local ONNX fallback, ~150MB RAM).")
         return EMBEDDINGS
     except Exception as exc:
         EMBEDDINGS_ERROR = exc
@@ -752,21 +849,23 @@ def get_session_state(session_id: str):
     }
 
 
-import threading
-
-
 @app.on_event("startup")
 def startup_prewarm():
-    """Load sessions and prewarm local FastEmbed model in background."""
+    """Load sessions and optionally prewarm embeddings in background."""
     load_sessions_from_disk()
 
-    def _prewarm():
-        try:
-            get_embeddings()
-            print("FastEmbed model pre-warmed successfully.")
-        except Exception as err:
-            print(f"Notice: FastEmbed pre-warm ({err})")
-    threading.Thread(target=_prewarm, daemon=True).start()
+    # Only prewarm if remote service or Gemini key is NOT available
+    # (i.e., we'd fall through to local FastEmbed which benefits from pre-warming)
+    if not EMBEDDING_SERVICE_URL and not get_gemini_api_keys():
+        def _prewarm():
+            try:
+                get_embeddings()
+                print("Local FastEmbed model pre-warmed successfully.")
+            except Exception as err:
+                print(f"Notice: FastEmbed pre-warm ({err})")
+        threading.Thread(target=_prewarm, daemon=True).start()
+    else:
+        print(f"Embeddings: {'remote service' if EMBEDDING_SERVICE_URL else 'cloud API'} configured, skipping local pre-warm.")
 
 
 @app.get("/raw/{session_id}/{filename}")
@@ -901,44 +1000,68 @@ async def upload_files(
     for c in chunks:
         c.metadata["session_id"] = session_id
 
+    # Embedding & Indexing with Key Rotation on Rate Limit (429)
+    keys = get_gemini_api_keys()
+    max_attempts = max(len(keys), 1) if keys else 1
     stored_in_supabase = False
-    try:
-        curr_embeddings = get_embeddings()
+    indexing_success = False
+    last_emb_error = None
 
-        # Persist in Supabase pgvector if configured, otherwise use in-memory Chroma
-        if supabase_client:
-            try:
-                supabase_vectorstore = SupabaseVectorStore(
-                    client=supabase_client,
-                    embedding=curr_embeddings,
-                    table_name="documents",
-                    query_name="match_documents",
-                )
-                supabase_vectorstore.add_documents(chunks)
-                stored_in_supabase = True
-            except Exception as err:
-                print(f"Warning: Supabase vector store insert failed ({err}), falling back to Chroma.")
-                stored_in_supabase = False
+    for attempt in range(max_attempts):
+        try:
+            curr_embeddings = get_embeddings()
 
-        if not stored_in_supabase:
-            vector_dir = os.path.join(session_dir, "chroma_db")
-            os.makedirs(vector_dir, exist_ok=True)
-            if session_id in session_vectorstores:
-                session_vectorstores[session_id].add_texts(
-                    [c.page_content for c in chunks]
-                )
+            # Persist in Supabase pgvector if configured, otherwise use in-memory Chroma
+            if supabase_client:
+                try:
+                    supabase_vectorstore = SupabaseVectorStore(
+                        client=supabase_client,
+                        embedding=curr_embeddings,
+                        table_name="documents",
+                        query_name="match_documents",
+                    )
+                    supabase_vectorstore.add_documents(chunks)
+                    stored_in_supabase = True
+                except Exception as err:
+                    if is_rate_limit_error(err):
+                        raise  # Let outer retry loop handle 429
+                    print(f"Warning: Supabase vector store insert failed ({err}), falling back to Chroma.")
+                    stored_in_supabase = False
+
+            if not stored_in_supabase:
+                vector_dir = os.path.join(session_dir, "chroma_db")
+                os.makedirs(vector_dir, exist_ok=True)
+                if session_id in session_vectorstores:
+                    session_vectorstores[session_id].add_texts(
+                        [c.page_content for c in chunks]
+                    )
+                else:
+                    if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
+                        oldest_sid = next(iter(session_vectorstores))
+                        del session_vectorstores[oldest_sid]
+                    session_vectorstores[session_id] = Chroma.from_documents(
+                        chunks, curr_embeddings, persist_directory=vector_dir
+                    )
+
+            indexing_success = True
+            break
+        except Exception as emb_err:
+            last_emb_error = emb_err
+            if is_rate_limit_error(emb_err) and keys:
+                print(f"Embedding rate limit / 429 with current key ({emb_err}). Rotating key...")
+                rotate_api_key()
+                continue
             else:
-                if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
-                    oldest_sid = next(iter(session_vectorstores))
-                    del session_vectorstores[oldest_sid]
-                session_vectorstores[session_id] = Chroma.from_documents(
-                    chunks, curr_embeddings, persist_directory=vector_dir
+                print(f"Embedding / indexing error ({emb_err})")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to embed/index documents: {str(emb_err)}",
                 )
-    except Exception as emb_err:
-        print(f"Embedding / indexing error ({emb_err})")
+
+    if not indexing_success:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to embed/index documents: {str(emb_err)}",
+            detail=f"Failed to embed/index after {max_attempts} key rotations: {str(last_emb_error)}",
         )
 
     # Clean up upload buffers and trigger garbage collection immediately

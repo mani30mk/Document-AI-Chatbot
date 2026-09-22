@@ -8,3 +8,14 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+
+  - type: web
+    name: document-ai-embeddings
+    runtime: python
+    plan: free
+    rootDir: embedding_service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
