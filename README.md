@@ -9,46 +9,63 @@ A modern, full-stack Retrieval-Augmented Generation (RAG) application that allow
 The application is built using a decoupled **Two-Service Microservice Architecture** designed to maximize speed, save API token costs, and stay well within free-tier cloud limits:
 
 ```mermaid
-flowchart TD
-    subgraph Client["🖥️ Frontend (Client Browser)"]
-        UI["Modern Glassmorphic UI<br/>(index.html)"]
-        Viewer["Native File Viewer<br/>(PDF, DOCX, PPTX, TXT)"]
-        Chat["Interactive Chat &<br/>YouTube Lectures"]
-        Summary["One-Click Summary<br/>& Key Points"]
+graph TD
+%% Layer 1: Client & Presentation
+    subgraph ClientLayer ["1. Presentation Layer (Client Browser)"]
+        UI["Web UI & Document Viewer<br/>• Native PDF / Slide Preview<br/>• Real-time Progress Tracking<br/>• Markdown Chat & Video Cards"]
     end
 
-    subgraph MainService["⚙️ Main Web Service (FastAPI)"]
-        API["FastAPI Backend<br/>(main.py)"]
-        Parser["Document Parsers<br/>(pypdf, python-docx, python-pptx)"]
-        Chunker["Text Splitter<br/>(500 chars / 50 overlap)"]
-        RAG["RAG Engine &<br/>Prompt Formatter"]
-        YT["YouTube Lecture<br/>Recommendation Engine"]
+%% Layer 2: API & Application Engine
+    subgraph AppLayer ["2. Application Layer (FastAPI Backend)"]
+        Gateway["FastAPI Gateway & Session Manager"]
+        Parser["Document Extraction & Chunking<br/>• Parsers: pypdf, python-docx, python-pptx<br/>• Chunking: 1000 chars / 200 overlap"]
+        RAG["RAG Orchestrator<br/>• Semantic Context Retrieval<br/>• Dynamic Prompt Engineering"]
+        YT["Recommendation Engine<br/>• Academic Subject Extraction<br/>• Educational Video Discovery"]
     end
 
-    subgraph EmbeddingService["⚡ Dedicated Embedding Microservice"]
-        FastEmbedAPI["FastAPI Embedding Server<br/>(FastEmbed ONNX Runtime)"]
-        Model["BAAI/bge-small-en-v1.5<br/>(384-dimensional vectors)"]
+%% Layer 3: Vectorization Microservice
+    subgraph Microservice ["3. Dedicated Embedding Microservice (FastEmbed ONNX)"]
+        EmbedAPI["Embedding API (FastAPI)"]
+        ONNX["BAAI/bge-small-en-v1.5 Model<br/>• 384-Dimensional Vectors<br/>• 0 External API Tokens Used"]
     end
 
-    subgraph External["☁️ External Cloud Services"]
-        Gemini["Google Gemini LLM<br/>(gemini-2.5-flash / gemini-1.5-flash)"]
-        Supabase["Supabase Cloud Database<br/>(pgvector + File Storage)"]
+%% Layer 4: AI & Persistence Layer
+    subgraph CloudLayer ["4. Intelligence & Persistence Layer"]
+        Gemini["Google Gemini LLM<br/>• Primary: gemini-2.5-flash<br/>• Fallback: gemini-1.5-flash<br/>• Key-Rotation on Rate Limits (429)"]
+        Supabase["Supabase Cloud Database<br/>• pgvector Cosine Similarity Search<br/>• Raw Document Storage Bucket"]
     end
 
-    UI --> Viewer
-    UI --> Chat
-    UI --> Summary
+%% Ingestion Flow (Solid Lines)
+    UI ==>|"1. Upload File (.pdf, .docx, .pptx)"| Gateway
+    Gateway --> Parser
+    Parser -->|"Micro-Batched Chunks (12/req)"| EmbedAPI
+    EmbedAPI --> ONNX
+    ONNX -->|"384-d Dense Vectors"| EmbedAPI
+    EmbedAPI -->|"Vector Embeddings"| Gateway
+    Gateway ==>|"Index Vectors & Chunks"| Supabase
 
-    UI <==>|"REST API / JSON"| API
-    API --> Parser --> Chunker
-    Chunker -->|"Batched Text Chunks"| FastEmbedAPI
-    FastEmbedAPI --> Model
-    Model -->|"384-d Embeddings"| FastEmbedAPI
-    FastEmbedAPI -->|"Vector Response"| API
+%% Query Flow (Dotted Lines)
+    UI -.->|"2. Ask Question"| Gateway
+    Gateway -.-> RAG
+    RAG -.->|"Embed Query"| EmbedAPI
+    RAG -.->|"Cosine Top-K Search"| Supabase
+    Supabase -.->|"Relevant Context"| RAG
+    RAG -.->|"Augmented Prompt"| Gemini
+    Gemini -.->|"Grounded Answer"| RAG
+    RAG -.-> YT
+    YT -.->|"Lecture Video Cards"| Gateway
+    Gateway -.->|"Answer + Citations + Videos"| UI
 
-    API <==>|"Store & Query Vectors"| Supabase
-    API <==>|"RAG Context & Answers"| Gemini
-    API -->|"Extract Academic Topics"| YT
+%% Styling
+    classDef client fill:#1e293b,stroke:#6366f1,stroke-width:2px,color:#f8fafc;
+    classDef app fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef service fill:#0f172a,stroke:#34d399,stroke-width:2px,color:#f8fafc;
+    classDef cloud fill:#0f172a,stroke:#f59e0b,stroke-width:2px,color:#f8fafc;
+
+    class UI client;
+    class Gateway,Parser,RAG,YT app;
+    class EmbedAPI,ONNX service;
+    class Gemini,Supabase cloud;
 ```
 
 ---
