@@ -452,8 +452,8 @@ def get_available_models(api_key: str | None = None) -> list[str]:
         return AVAILABLE_GEMINI_MODELS
 
     candidates = [
-        "gemini-flash-latest",
         "gemini-2.5-flash",
+        "gemini-flash-latest",
         "gemini-flash-lite-latest",
         "gemini-2.0-flash",
     ]
@@ -485,8 +485,8 @@ def get_available_models(api_key: str | None = None) -> list[str]:
 
                 # Prioritize: fast flash models first, then other stable models
                 preferred_order = [
-                    "gemini-flash-latest",
                     "gemini-2.5-flash",
+                    "gemini-flash-latest",
                     "gemini-flash-lite-latest",
                     "gemini-2.0-flash",
                 ]
@@ -1418,16 +1418,18 @@ async def ask(req: AskRequest):
     last_error = None
     start_time = time.monotonic()
     MAX_BUDGET_SECONDS = 35.0
+    MIN_DEADLINE_S = 11.0  # Google's floor is 10s; small safety margin
+    MAX_KEY_ATTEMPTS_PER_MODEL = 2
 
     for m_name in models_to_try:
         remaining = MAX_BUDGET_SECONDS - (time.monotonic() - start_time)
-        if remaining <= 2:
-            print(f"Time budget exceeded ({MAX_BUDGET_SECONDS - remaining:.1f}s), breaking model loop in /ask...")
+        if remaining < MIN_DEADLINE_S:
+            print(f"Time budget remaining ({remaining:.1f}s < {MIN_DEADLINE_S:.1f}s floor), breaking model loop in /ask...")
             break
-        for _ in range(len(keys)):
+        for _ in range(min(MAX_KEY_ATTEMPTS_PER_MODEL, len(keys))):
             remaining = MAX_BUDGET_SECONDS - (time.monotonic() - start_time)
-            if remaining <= 2:
-                print(f"Time budget exceeded ({MAX_BUDGET_SECONDS - remaining:.1f}s), breaking key loop in /ask...")
+            if remaining < MIN_DEADLINE_S:
+                print(f"Time budget remaining ({remaining:.1f}s < {MIN_DEADLINE_S:.1f}s floor), breaking key loop in /ask...")
                 break
             current_key = get_current_api_key()
             try:
@@ -1501,6 +1503,54 @@ async def ask(req: AskRequest):
 def normalize_doc_name(name: str) -> str:
     """Normalize filename for fuzzy matching (case, hyphens, underscores, spaces)."""
     return re.sub(r"[\s\-_]+", "", name.lower())
+
+
+def select_representative_chunks(session_id: str, filename: str, max_chunks: int = 10) -> list[str] | None:
+    """
+    Pick representative chunks for a document using its already-computed embeddings,
+    by choosing the chunks closest to the centroid of that document's chunk embeddings.
+    Returns None if too few chunks exist (caller falls back to existing tiered text logic).
+    """
+    chunks_with_vecs: list[tuple[str, list[float]]] = []
+
+    # 1. In-memory fallback store
+    store = session_vectorstores.get(session_id)
+    if store and store.get("chunks") and store.get("embeddings"):
+        for chunk, vec in zip(store["chunks"], store["embeddings"]):
+            source = chunk.get("metadata", {}).get("source", "")
+            if os.path.basename(source) == filename or normalize_doc_name(os.path.basename(source)) == normalize_doc_name(filename):
+                chunks_with_vecs.append((chunk["content"], vec))
+
+    # 2. Supabase pgvector, if nothing found in-memory
+    if not chunks_with_vecs and supabase_client:
+        try:
+            res = (
+                supabase_client.table("documents")
+                .select("content, metadata, embedding")
+                .eq("metadata->>session_id", session_id)
+                .execute()
+            )
+            for row in (res.data or []):
+                source = (row.get("metadata") or {}).get("source", "")
+                if os.path.basename(source) == filename or normalize_doc_name(os.path.basename(source)) == normalize_doc_name(filename):
+                    chunks_with_vecs.append((row["content"], row["embedding"]))
+        except Exception as e:
+            print(f"Notice: Supabase chunk lookup for summarize failed ({e})")
+
+    if len(chunks_with_vecs) <= max_chunks:
+        return None  # too few chunks to bother — let existing tiered text logic handle it
+
+    contents = [c for c, _ in chunks_with_vecs]
+    vecs = [v for _, v in chunks_with_vecs]
+    dim = len(vecs[0])
+    centroid = [sum(v[i] for v in vecs) / len(vecs) for i in range(dim)]
+    distances = [
+        math.sqrt(sum((v[i] - centroid[i]) ** 2 for i in range(dim)))
+        for v in vecs
+    ]
+    top_indices = sorted(range(len(distances)), key=lambda i: distances[i])[:max_chunks]
+    top_indices_sorted = sorted(top_indices)  # preserve original document order for readability
+    return [contents[i] for i in top_indices_sorted]
 
 
 @app.post("/summarize")
@@ -1609,6 +1659,11 @@ async def summarize(req: SummarizeRequest):
             detail=f"File '{fname}' not found in session and no text could be extracted.",
         )
 
+    rep_chunks = select_representative_chunks(sid, fname)
+    if rep_chunks:
+        text = "\n\n---\n\n".join(rep_chunks)
+        print(f"Summarize: using {len(rep_chunks)} representative chunks instead of full {len(text)}-char text.")
+
     prompt = SUMMARIZE_PROMPT.format(text=text[:20000])
 
     models_to_try = get_available_models()[:5]
@@ -1623,16 +1678,18 @@ async def summarize(req: SummarizeRequest):
     last_error = None
     start_time = time.monotonic()
     MAX_BUDGET_SECONDS = 35.0
+    MIN_DEADLINE_S = 11.0  # Google's floor is 10s; small safety margin
+    MAX_KEY_ATTEMPTS_PER_MODEL = 2
 
     for m_name in models_to_try:
         remaining = MAX_BUDGET_SECONDS - (time.monotonic() - start_time)
-        if remaining <= 2:
-            print(f"Time budget exceeded ({MAX_BUDGET_SECONDS - remaining:.1f}s), breaking model loop in /summarize...")
+        if remaining < MIN_DEADLINE_S:
+            print(f"Time budget remaining ({remaining:.1f}s < {MIN_DEADLINE_S:.1f}s floor), breaking model loop in /summarize...")
             break
-        for _ in range(len(keys)):
+        for _ in range(min(MAX_KEY_ATTEMPTS_PER_MODEL, len(keys))):
             remaining = MAX_BUDGET_SECONDS - (time.monotonic() - start_time)
-            if remaining <= 2:
-                print(f"Time budget exceeded ({MAX_BUDGET_SECONDS - remaining:.1f}s), breaking key loop in /summarize...")
+            if remaining < MIN_DEADLINE_S:
+                print(f"Time budget remaining ({remaining:.1f}s < {MIN_DEADLINE_S:.1f}s floor), breaking key loop in /summarize...")
                 break
             current_key = get_current_api_key()
             try:

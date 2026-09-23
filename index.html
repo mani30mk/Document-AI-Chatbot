@@ -2849,98 +2849,109 @@ function summarizeActiveFile() {
   }
 }
 
+let summarizationInFlight = false;
+
 async function summarizeFile(filename) {
-  if (!sessionId) {
-    await initSession();
-    if (!sessionId) {
-      showToast('Connecting to server… please try again.');
-      return;
-    }
-  }
-
-  // Find file object from files array with fuzzy matching
-  const targetNorm = filename ? filename.toLowerCase().replace(/[\s\-_]+/g, '') : '';
-  const f = files.find(file => 
-    file.name === filename || 
-    (file.name && file.name.toLowerCase().replace(/[\s\-_]+/g, '') === targetNorm)
-  ) || (activeIdx !== null ? files[activeIdx] : null) || (files.length > 0 ? files[0] : null);
-
-  const targetFilename = f ? f.name : filename;
-  const clientText = f ? f.text : null;
-
-  // Open the panel and switch to Summary tab
-  if (!chatOpen) toggleChat();
-  switchChatPanelTab('summary');
-
-  const titleEl = document.getElementById('summaryDocTitle');
-  if (titleEl) titleEl.textContent = `✨ Summary of ${targetFilename}`;
-
-  const textEl = document.getElementById('summaryPanelText');
-  if (textEl) {
-    textEl.innerHTML = `
-      <div class="summary-loading-card">
-        <div class="summary-spinner-ring"></div>
-        <div class="summary-loading-title">Generating Executive Summary</div>
-        <div class="summary-loading-sub">Analyzing document text & synthesizing key insights with Gemini AI…</div>
-        <div class="summary-shimmer-container">
-          <div class="summary-shimmer-line" style="width: 90%;"></div>
-          <div class="summary-shimmer-line" style="width: 75%;"></div>
-          <div class="summary-shimmer-line" style="width: 85%;"></div>
-          <div class="summary-shimmer-line" style="width: 65%;"></div>
-        </div>
-      </div>
-    `;
-  }
-
-  const btn = document.getElementById('btnRefreshSummary');
-  if (btn) {
-    btn.textContent = '⏳ Summarizing…';
-    btn.disabled = true;
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 90000);
+  if (summarizationInFlight) return;
+  summarizationInFlight = true;
 
   try {
-    const res = await fetch(`${API_BASE}/summarize`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        session_id: sessionId, 
-        filename: targetFilename,
-        text: clientText 
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Failed to summarize');
-    
-    if (textEl) renderFormattedMessage(textEl, data.summary);
-    showToast('Summary generated successfully!');
-  } catch (e) {
-    clearTimeout(timeoutId);
+    if (!sessionId) {
+      await initSession();
+      if (!sessionId) {
+        showToast('Connecting to server… please try again.');
+        return;
+      }
+    }
+
+    // Find file object from files array with fuzzy matching
+    const targetNorm = filename ? filename.toLowerCase().replace(/[\s\-_]+/g, '') : '';
+    const f = files.find(file => 
+      file.name === filename || 
+      (file.name && file.name.toLowerCase().replace(/[\s\-_]+/g, '') === targetNorm)
+    ) || (activeIdx !== null ? files[activeIdx] : null) || (files.length > 0 ? files[0] : null);
+
+    const targetFilename = f ? f.name : filename;
+    const clientText = f ? f.text : null;
+
+    const titleEl = document.getElementById('summaryDocTitle');
+    if (titleEl) titleEl.textContent = `✨ Summary of ${targetFilename}`;
+
+    // Render loading spinner into summaryPanelText BEFORE switching tabs
+    // so switchChatPanelTab doesn't see an empty panel and trigger a duplicate fetch
+    const textEl = document.getElementById('summaryPanelText');
     if (textEl) {
       textEl.innerHTML = `
-        <div class="summary-loading-card" style="background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(99, 102, 241, 0.25);">
-          <div style="font-size: 26px;">✨</div>
-          <div class="summary-loading-title">Document Summary Ready to Generate</div>
-          <div class="summary-loading-sub">The cloud server was busy or warming up. Click below to load your summary.</div>
-          <div style="margin-top: 6px;">
-            <button class="summary-btn-action" style="background: #6366f1; color: #fff; border-color: #6366f1; font-weight: 600; padding: 7px 18px; border-radius: 8px;" onclick="summarizeFile('${targetFilename}')">
-              🔄 Load Summary Now
-            </button>
+        <div class="summary-loading-card">
+          <div class="summary-spinner-ring"></div>
+          <div class="summary-loading-title">Generating Executive Summary</div>
+          <div class="summary-loading-sub">Analyzing document text & synthesizing key insights with Gemini AI…</div>
+          <div class="summary-shimmer-container">
+            <div class="summary-shimmer-line" style="width: 90%;"></div>
+            <div class="summary-shimmer-line" style="width: 75%;"></div>
+            <div class="summary-shimmer-line" style="width: 85%;"></div>
+            <div class="summary-shimmer-line" style="width: 65%;"></div>
           </div>
         </div>
       `;
     }
-    showToast('Document summary ready — click Load Summary');
-  } finally {
+
+    const btn = document.getElementById('btnRefreshSummary');
     if (btn) {
-      btn.textContent = '🔄 Regenerate';
-      btn.disabled = false;
+      btn.textContent = '⏳ Summarizing…';
+      btn.disabled = true;
     }
+
+    // Open the panel and switch to Summary tab (after loading card is in place)
+    if (!chatOpen) toggleChat();
+    switchChatPanelTab('summary');
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000);
+
+    try {
+      const res = await fetch(`${API_BASE}/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          session_id: sessionId, 
+          filename: targetFilename,
+          text: clientText 
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to summarize');
+      
+      if (textEl) renderFormattedMessage(textEl, data.summary);
+      showToast('Summary generated successfully!');
+    } catch (e) {
+      clearTimeout(timeoutId);
+      if (textEl) {
+        textEl.innerHTML = `
+          <div class="summary-loading-card" style="background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(99, 102, 241, 0.25);">
+            <div style="font-size: 26px;">✨</div>
+            <div class="summary-loading-title">Document Summary Ready to Generate</div>
+            <div class="summary-loading-sub">The cloud server was busy or warming up. Click below to load your summary.</div>
+            <div style="margin-top: 6px;">
+              <button class="summary-btn-action" style="background: #6366f1; color: #fff; border-color: #6366f1; font-weight: 600; padding: 7px 18px; border-radius: 8px;" onclick="summarizeFile('${targetFilename}')">
+                🔄 Load Summary Now
+              </button>
+            </div>
+          </div>
+        `;
+      }
+      showToast('Document summary ready — click Load Summary');
+    } finally {
+      if (btn) {
+        btn.textContent = '🔄 Regenerate';
+        btn.disabled = false;
+      }
+    }
+  } finally {
+    summarizationInFlight = false;
   }
 }
 </script>
