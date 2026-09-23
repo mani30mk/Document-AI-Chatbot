@@ -1184,7 +1184,8 @@ def list_sessions(device_id: str):
 def cleanup_old_sessions(older_than_days: int = 5, key: str = ""):
     """Delete sessions inactive for more than `older_than_days`, cascading to
     their Supabase Storage files and vector rows. Protected by ADMIN_CLEANUP_KEY."""
-    if not ADMIN_CLEANUP_KEY or key != ADMIN_CLEANUP_KEY:
+    admin_key = os.getenv("ADMIN_CLEANUP_KEY", "") or ADMIN_CLEANUP_KEY
+    if not admin_key or key != admin_key:
         raise HTTPException(status_code=403, detail="Invalid or missing admin key.")
     if not supabase_client:
         raise HTTPException(status_code=500, detail="Supabase not configured.")
@@ -1250,6 +1251,45 @@ def get_session_state(session_id: str):
         "history": history_list,
         "history_turns": len(history_list) // 2,
     }
+
+
+@app.delete("/session/{session_id}")
+def delete_session(session_id: str):
+    """Delete a single session: its chat_sessions row, vector/document rows,
+    and any Supabase Storage files, plus evict it from in-memory caches."""
+    deleted_from_db = False
+
+    if supabase_client:
+        try:
+            supabase_client.table("documents").delete().eq("metadata->>session_id", session_id).execute()
+        except Exception as e:
+            print(f"Notice: documents cleanup for session {session_id} failed ({e})")
+
+        try:
+            files_in_bucket = supabase_client.storage.from_("documents").list(session_id)
+            if files_in_bucket:
+                paths = [f"{session_id}/{f['name']}" for f in files_in_bucket if isinstance(f, dict) and f.get('name')]
+                if paths:
+                    supabase_client.storage.from_("documents").remove(paths)
+        except Exception as e:
+            print(f"Notice: storage cleanup for session {session_id} failed ({e})")
+
+        try:
+            res = supabase_client.table("chat_sessions").delete().eq("session_id", session_id).execute()
+            deleted_from_db = bool(res.data)
+        except Exception as e:
+            print(f"Notice: chat_sessions delete for session {session_id} failed ({e})")
+
+    for d in (session_histories, session_files, session_docs, session_slides, session_vectorstores, session_device_ids, session_updated_at):
+        d.pop(session_id, None)
+    if session_id in session_access_order:
+        session_access_order.remove(session_id)
+
+    if not deleted_from_db and not supabase_client:
+        # Dev fallback: no Supabase configured, nothing persisted to delete beyond in-memory (already done above)
+        pass
+
+    return {"deleted": session_id}
 
 
 @app.on_event("startup")

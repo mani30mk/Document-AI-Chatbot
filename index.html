@@ -199,6 +199,32 @@
     color: var(--accent);
     font-weight: 600;
   }
+  .session-delete-btn {
+    background: none;
+    border: none;
+    font-size: 13px;
+    color: var(--muted);
+    opacity: 0;
+    cursor: pointer;
+    line-height: 1;
+    padding: 3px 5px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+  }
+  .history-item:hover .session-delete-btn {
+    opacity: 0.7;
+  }
+  .session-delete-btn:hover {
+    opacity: 1 !important;
+    background: rgba(217, 79, 79, 0.15);
+    color: var(--danger);
+  }
+  @media (hover: none) {
+    .session-delete-btn {
+      opacity: 0.7;
+    }
+  }
   .history-item-time {
     font-size: 10.5px;
     color: var(--muted);
@@ -1790,6 +1816,7 @@ async function loadSidebarSessions() {
           <div class="history-item-top">
             <span class="history-item-icon">💬</span>
             <span class="history-item-title">${safeTitle}</span>
+            <button class="session-delete-btn" onclick="deleteSession('${s.session_id}', event)" title="Delete session">🗑️</button>
           </div>
           <div class="history-item-time">${relTime}</div>
         </div>
@@ -1800,6 +1827,27 @@ async function loadSidebarSessions() {
     if (container) {
       container.innerHTML = '<div class="history-empty">Failed to load chat history</div>';
     }
+  }
+}
+
+async function deleteSession(sessionIdToDelete, event) {
+  if (event) event.stopPropagation();
+  if (!confirm('Delete this chat session? This cannot be undone.')) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/session/${sessionIdToDelete}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete session');
+
+    // If the deleted session is the one currently open, start a fresh one
+    if (sessionIdToDelete === sessionId) {
+      await createNewSession(true);
+    } else {
+      await loadSidebarSessions();
+    }
+    showToast('Session deleted.');
+  } catch (e) {
+    console.error('deleteSession error:', e);
+    showToast('Could not delete session. Please try again.');
   }
 }
 
