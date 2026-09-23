@@ -1505,6 +1505,25 @@ def normalize_doc_name(name: str) -> str:
     return re.sub(r"[\s\-_]+", "", name.lower())
 
 
+import ast
+
+
+def _parse_embedding(raw):
+    """Supabase/postgrest can return pgvector columns as a string like
+    '[0.1,-0.2,...]' instead of a parsed list — normalize either form to floats."""
+    if isinstance(raw, str):
+        try:
+            return [float(x) for x in ast.literal_eval(raw)]
+        except Exception:
+            try:
+                return [float(x) for x in raw.strip("[]").split(",") if x.strip()]
+            except Exception:
+                return None
+    if isinstance(raw, list):
+        return [float(x) for x in raw]
+    return None
+
+
 def select_representative_chunks(session_id: str, filename: str, max_chunks: int = 10) -> list[str] | None:
     """
     Pick representative chunks for a document using its already-computed embeddings,
@@ -1516,10 +1535,12 @@ def select_representative_chunks(session_id: str, filename: str, max_chunks: int
     # 1. In-memory fallback store
     store = session_vectorstores.get(session_id)
     if store and store.get("chunks") and store.get("embeddings"):
-        for chunk, vec in zip(store["chunks"], store["embeddings"]):
+        for chunk, raw_vec in zip(store["chunks"], store["embeddings"]):
             source = chunk.get("metadata", {}).get("source", "")
             if os.path.basename(source) == filename or normalize_doc_name(os.path.basename(source)) == normalize_doc_name(filename):
-                chunks_with_vecs.append((chunk["content"], vec))
+                vec = _parse_embedding(raw_vec)
+                if vec:
+                    chunks_with_vecs.append((chunk["content"], vec))
 
     # 2. Supabase pgvector, if nothing found in-memory
     if not chunks_with_vecs and supabase_client:
@@ -1533,7 +1554,9 @@ def select_representative_chunks(session_id: str, filename: str, max_chunks: int
             for row in (res.data or []):
                 source = (row.get("metadata") or {}).get("source", "")
                 if os.path.basename(source) == filename or normalize_doc_name(os.path.basename(source)) == normalize_doc_name(filename):
-                    chunks_with_vecs.append((row["content"], row["embedding"]))
+                    vec = _parse_embedding(row.get("embedding"))
+                    if vec:
+                        chunks_with_vecs.append((row["content"], vec))
         except Exception as e:
             print(f"Notice: Supabase chunk lookup for summarize failed ({e})")
 
