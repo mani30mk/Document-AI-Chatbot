@@ -205,21 +205,20 @@ async def upload_files(
                     print(f"Warning: Supabase vector insert failed ({err}), falling back to in-memory.")
                     stored_in_supabase = False
 
-            if not stored_in_supabase:
-                # In-memory fallback vector store
-                if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
-                    oldest_sid = next(iter(session_vectorstores))
-                    del session_vectorstores[oldest_sid]
-                if session_id in session_vectorstores:
-                    session_vectorstores[session_id]["chunks"].extend(
-                        [{"content": t, "metadata": m} for t, m in zip(all_texts, all_metadata)]
-                    )
-                    session_vectorstores[session_id]["embeddings"].extend(vectors)
-                else:
-                    session_vectorstores[session_id] = {
-                        "chunks": [{"content": t, "metadata": m} for t, m in zip(all_texts, all_metadata)],
-                        "embeddings": vectors,
-                    }
+            # Always cache current session vector store in memory for instant 0ms retrieval and offline fallback
+            if len(session_vectorstores) >= MAX_CACHED_VECTORSTORES:
+                oldest_sid = next(iter(session_vectorstores))
+                del session_vectorstores[oldest_sid]
+            if session_id in session_vectorstores:
+                session_vectorstores[session_id]["chunks"].extend(
+                    [{"content": t, "metadata": m} for t, m in zip(all_texts, all_metadata)]
+                )
+                session_vectorstores[session_id]["embeddings"].extend(vectors)
+            else:
+                session_vectorstores[session_id] = {
+                    "chunks": [{"content": t, "metadata": m} for t, m in zip(all_texts, all_metadata)],
+                    "embeddings": vectors,
+                }
 
             indexing_success = True
             break

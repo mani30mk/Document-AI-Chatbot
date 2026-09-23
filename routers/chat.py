@@ -55,36 +55,82 @@ async def ask(req: AskRequest):
     if sid not in session_histories:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    # Retrieve relevant context via vector search
+    # Retrieve relevant context via hybrid vector + keyword search
     retrieved_docs = []
     try:
         embeddings = get_embeddings()
         query_vec = embeddings.embed_query(req.question)
 
-        # Try Supabase pgvector first
-        supabase = get_supabase_client()
-        if supabase:
-            retrieved_docs = search_supabase_vectors(query_vec, sid, k=5)
+        # A. Try in-memory vector store first (fastest, 0ms)
+        if sid in session_vectorstores:
+            retrieved_docs = search_vectors(query_vec, session_vectorstores[sid], k=7, query_text=req.question)
 
-        # Fallback to in-memory vector store
-        if not retrieved_docs and sid in session_vectorstores:
-            retrieved_docs = search_vectors(query_vec, session_vectorstores[sid], k=5)
+        # B. If not in memory or insufficient results, query Supabase pgvector
+        if not retrieved_docs or len(retrieved_docs) < 3:
+            supabase = get_supabase_client()
+            if supabase:
+                sb_docs = search_supabase_vectors(query_vec, sid, k=7, query_text=req.question)
+                seen = {d.get("content") for d in retrieved_docs}
+                for d in sb_docs:
+                    if d.get("content") not in seen:
+                        retrieved_docs.append(d)
+                        seen.add(d.get("content"))
     except Exception as r_err:
         print(f"Vector search error ({r_err}), using raw document text fallback.")
 
     context = (
         "\n\n".join(
             f"[{os.path.basename(d.get('metadata', {}).get('source', 'document'))}]: {d['content']}"
-            for d in retrieved_docs
+            for d in retrieved_docs[:7]
         )
         if retrieved_docs
         else ""
     )
+
+    # Hybrid Keyword & Full-Text Augmentation
+    # Ensures exact acronyms/keywords (e.g. 'NI Score') from session_docs are always in context
+    if sid in session_docs and session_docs[sid]:
+        extracted_sections = []
+        for fname, full_text in session_docs[sid].items():
+            if not full_text:
+                continue
+            # If the entire document is concise (<= 25,000 chars / ~15 pages), pass full document if context is thin
+            if len(full_text) <= 25000 and len(context) < 3000:
+                extracted_sections.append(f"[{fname} full text]:\n{full_text}")
+            else:
+                # Search for specific acronyms/phrases from the question in full_text
+                keywords = [
+                    w for w in re.findall(r"\b[A-Za-z0-9_-]{2,}\b", req.question)
+                    if w.lower() not in {"what", "is", "are", "the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "of", "with", "how", "why", "who", "which", "where", "can", "you", "tell", "about", "explain", "describe", "define"}
+                ]
+                windows = []
+                for kw in keywords:
+                    for m in re.finditer(r"\b" + re.escape(kw) + r"\b", full_text, re.IGNORECASE):
+                        start_pos = max(0, m.start() - 800)
+                        end_pos = min(len(full_text), m.end() + 1200)
+                        window_text = full_text[start_pos:end_pos].strip()
+                        if not any(window_text in w or w in window_text for w in windows):
+                            windows.append(window_text)
+                        if len(windows) >= 3:
+                            break
+                    if len(windows) >= 3:
+                        break
+                if windows:
+                    extracted_sections.append(f"[{fname} relevant sections]:\n" + "\n\n---\n\n".join(windows))
+
+        if extracted_sections:
+            extra_context = "\n\n".join(extracted_sections)
+            if context:
+                context += "\n\n" + extra_context
+            else:
+                context = extra_context
+
+    # Final fallback if context is still empty
     if not context and sid in session_docs:
         context = "\n\n".join(
-            f"[{fname}]: {text[:1500]}"
+            f"[{fname}]: {text[:8000]}"
             for fname, text in session_docs[sid].items()
-        )[:4000]
+        )[:20000]
 
     models_to_try = get_available_models()[:5]
     keys = get_gemini_api_keys()

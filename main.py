@@ -62,6 +62,7 @@ from services.vector_search import (
     search_supabase_vectors,
     select_representative_chunks,
     normalize_doc_name,
+    find_keyword_chunks,
 )
 from services.session_store import (
     load_sessions_from_disk,
@@ -159,6 +160,7 @@ __all__ = [
     "cosine_similarity",
     "search_vectors",
     "search_supabase_vectors",
+    "find_keyword_chunks",
     "select_representative_chunks",
     "normalize_doc_name",
     "load_sessions_from_disk",
