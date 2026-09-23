@@ -91,6 +91,8 @@ session_files: dict[str, list[str]] = {}
 session_docs: dict[str, dict[str, str]] = {}
 session_slides: dict[str, dict[str, list]] = {}
 session_api_keys: dict[str, str] = {}
+session_device_ids: dict[str, str] = {}
+session_updated_at: dict[str, str] = {}
 
 # Bounded session cache — evict oldest when exceeding limit (re-hydrated from Supabase on demand)
 MAX_CACHED_SESSIONS = 5
@@ -114,6 +116,8 @@ def evict_old_sessions():
         session_slides.pop(oldest, None)
         session_api_keys.pop(oldest, None)
         session_vectorstores.pop(oldest, None)
+        session_device_ids.pop(oldest, None)
+        session_updated_at.pop(oldest, None)
         gc.collect()
         print(f"Evicted session {oldest[:8]}... from in-memory cache (will re-hydrate from Supabase on demand).")
 
@@ -216,6 +220,10 @@ def load_session(session_id: str) -> dict | None:
                 session_files[session_id] = files
                 session_docs[session_id] = docs
                 session_slides[session_id] = slides
+                if row.get("device_id"):
+                    session_device_ids[session_id] = row["device_id"]
+                if row.get("updated_at"):
+                    session_updated_at[session_id] = row["updated_at"]
                 session_histories[session_id] = [
                     {"role": m.get("role", "user"), "content": m.get("content", "")}
                     for m in raw_history
@@ -276,11 +284,15 @@ def save_session(
     docs: dict[str, str] | None = None,
     slides: dict[str, list] | None = None,
     history: list | None = None,
+    device_id: str | None = None,
 ):
     """
     Persist session state to Supabase (production) or local JSON (dev fallback).
     """
-    global session_histories, session_files, session_docs, session_slides
+    global session_histories, session_files, session_docs, session_slides, session_device_ids, session_updated_at
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    session_updated_at[session_id] = now_iso
 
     # Update in-memory dicts
     if files is not None:
@@ -291,11 +303,14 @@ def save_session(
         session_slides[session_id] = slides
     if history is not None:
         session_histories[session_id] = history
+    if device_id:
+        session_device_ids[session_id] = device_id
 
     cur_files = session_files.get(session_id, [])
     cur_docs = session_docs.get(session_id, {})
     cur_slides = session_slides.get(session_id, {})
     cur_msgs = session_histories.get(session_id, [])
+    cur_device_id = device_id or session_device_ids.get(session_id)
 
     history_json = [
         {"role": m["role"], "content": m["content"]}
@@ -311,8 +326,10 @@ def save_session(
                 "docs": cur_docs,
                 "slides": cur_slides,
                 "history": history_json,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": now_iso,
             }
+            if cur_device_id:
+                payload["device_id"] = cur_device_id
             supabase_client.table("chat_sessions").upsert(payload).execute()
             # Evict old sessions after successful Supabase persist
             touch_session(session_id)
@@ -1028,6 +1045,16 @@ class AskResponse(BaseModel):
     youtube_sources: List[YouTubeVideo] = []
 
 
+class NewSessionRequest(BaseModel):
+    device_id: str | None = None
+
+
+class SessionSummary(BaseModel):
+    session_id: str
+    title: str
+    updated_at: str
+
+
 class SessionResponse(BaseModel):
     session_id: str
     files: List[str]
@@ -1083,12 +1110,127 @@ def search_youtube(query: str, max_results: int = 3) -> list[dict]:
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
+ADMIN_CLEANUP_KEY = os.getenv("ADMIN_CLEANUP_KEY", "")
+
+
 @app.post("/session/new", response_model=SessionResponse)
-def new_session():
+def new_session(req: NewSessionRequest | None = None):
     """Create a new chat/upload session."""
     sid = str(uuid.uuid4())
-    save_session(sid, files=[], docs={}, slides={}, history=[])
+    dev_id = req.device_id if req else None
+    if dev_id:
+        session_device_ids[sid] = dev_id
+    save_session(sid, files=[], docs={}, slides={}, history=[], device_id=dev_id)
     return SessionResponse(session_id=sid, files=[])
+
+
+@app.get("/sessions", response_model=list[SessionSummary])
+def list_sessions(device_id: str):
+    """List past sessions for a given device_id, newest-active first."""
+    if not supabase_client:
+        summaries = []
+        for sid, dev_id in session_device_ids.items():
+            if dev_id == device_id:
+                files = session_files.get(sid, [])
+                history = session_histories.get(sid, [])
+                if files:
+                    title = files[0]
+                elif history:
+                    first_user_msg = next((h.get("content", "") for h in history if h.get("role") == "user"), "")
+                    title = (first_user_msg[:60] + "…") if len(first_user_msg) > 60 else (first_user_msg or "New chat")
+                else:
+                    title = "New chat"
+                summaries.append(SessionSummary(
+                    session_id=sid,
+                    title=title,
+                    updated_at=session_updated_at.get(sid, datetime.now(timezone.utc).isoformat()),
+                ))
+        summaries.sort(key=lambda s: s.updated_at, reverse=True)
+        return summaries
+
+    try:
+        res = (
+            supabase_client.table("chat_sessions")
+            .select("session_id, files, history, updated_at")
+            .eq("device_id", device_id)
+            .order("updated_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+    except Exception as e:
+        print(f"Notice: list_sessions query failed ({e})")
+        return []
+
+    summaries = []
+    for row in (res.data or []):
+        files = row.get("files") or []
+        history = row.get("history") or []
+        if files:
+            title = files[0]
+        elif history:
+            first_user_msg = next((h.get("content", "") for h in history if h.get("role") == "user"), "")
+            title = (first_user_msg[:60] + "…") if len(first_user_msg) > 60 else (first_user_msg or "New chat")
+        else:
+            title = "New chat"
+        summaries.append(SessionSummary(
+            session_id=row["session_id"],
+            title=title,
+            updated_at=row.get("updated_at") or "",
+        ))
+    return summaries
+
+
+@app.delete("/admin/sessions/cleanup")
+def cleanup_old_sessions(older_than_days: int = 5, key: str = ""):
+    """Delete sessions inactive for more than `older_than_days`, cascading to
+    their Supabase Storage files and vector rows. Protected by ADMIN_CLEANUP_KEY."""
+    if not ADMIN_CLEANUP_KEY or key != ADMIN_CLEANUP_KEY:
+        raise HTTPException(status_code=403, detail="Invalid or missing admin key.")
+    if not supabase_client:
+        raise HTTPException(status_code=500, detail="Supabase not configured.")
+
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+
+    try:
+        old_sessions = (
+            supabase_client.table("chat_sessions")
+            .select("session_id")
+            .lt("updated_at", cutoff)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to query old sessions: {e}")
+
+    deleted_count = 0
+    errors = []
+    for row in (old_sessions.data or []):
+        sid = row["session_id"]
+        try:
+            # 1. Delete vector/document rows for this session
+            supabase_client.table("documents").delete().eq("metadata->>session_id", sid).execute()
+            # 2. Delete any Storage files under this session's folder
+            try:
+                files_in_bucket = supabase_client.storage.from_("documents").list(sid)
+                if files_in_bucket:
+                    paths = [f"{sid}/{f['name']}" for f in files_in_bucket if isinstance(f, dict) and f.get('name')]
+                    if paths:
+                        supabase_client.storage.from_("documents").remove(paths)
+            except Exception as storage_err:
+                print(f"Notice: storage cleanup for session {sid} failed ({storage_err})")
+            # 3. Delete the session row itself
+            supabase_client.table("chat_sessions").delete().eq("session_id", sid).execute()
+            # 4. Evict from in-memory caches too, if present
+            for d in (session_histories, session_files, session_docs, session_slides, session_vectorstores, session_device_ids, session_updated_at):
+                d.pop(sid, None)
+            if sid in session_access_order:
+                session_access_order.remove(sid)
+            deleted_count += 1
+        except Exception as e:
+            errors.append(f"{sid}: {e}")
+
+    print(f"Session cleanup: deleted {deleted_count} sessions older than {older_than_days} days.")
+    return {"deleted": deleted_count, "errors": errors}
 
 
 @app.get("/session/{session_id}")
@@ -1398,9 +1540,19 @@ async def ask(req: AskRequest):
     except Exception as r_err:
         print(f"Vector search error ({r_err}), using raw document text fallback.")
 
-    context = "\n\n".join(d["content"] for d in retrieved_docs) if retrieved_docs else ""
+    context = (
+        "\n\n".join(
+            f"[{os.path.basename(d.get('metadata', {}).get('source', 'document'))}]: {d['content']}"
+            for d in retrieved_docs
+        )
+        if retrieved_docs
+        else ""
+    )
     if not context and sid in session_docs:
-        context = "\n\n".join(list(session_docs[sid].values()))[:4000]
+        context = "\n\n".join(
+            f"[{fname}]: {text[:1500]}"
+            for fname, text in session_docs[sid].items()
+        )[:4000]
 
     models_to_try = get_available_models()[:5]
     keys = get_gemini_api_keys()

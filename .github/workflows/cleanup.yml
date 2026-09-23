@@ -1,0 +1,25 @@
+name: Daily Session Cleanup
+
+on:
+  schedule:
+    # Runs daily at 03:00 UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Session Cleanup Endpoint
+        run: |
+          if [ -z "${{ secrets.MAIN_APP_URL }}" ] || [ -z "${{ secrets.ADMIN_CLEANUP_KEY }}" ]; then
+            echo "Error: MAIN_APP_URL or ADMIN_CLEANUP_KEY repository secret is missing."
+            exit 1
+          fi
+          
+          APP_URL="${{ secrets.MAIN_APP_URL }}"
+          # Trim trailing slash if present
+          APP_URL="${APP_URL%/}"
+          
+          echo "Triggering cleanup on $APP_URL..."
+          curl -f -s -X DELETE "$APP_URL/admin/sessions/cleanup?older_than_days=5&key=${{ secrets.ADMIN_CLEANUP_KEY }}"
