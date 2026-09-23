@@ -145,9 +145,9 @@
              onclick="loadSessionById('${s.session_id}')" 
              title="${safeTitle}">
           <div class="history-item-top">
-            <span class="history-item-icon">💬</span>
+            <span class="history-item-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg></span>
             <span class="history-item-title">${safeTitle}</span>
-            <button class="session-delete-btn" onclick="deleteSession('${s.session_id}', event)" title="Delete session">🗑️</button>
+            <button class="session-delete-btn" onclick="deleteSession('${s.session_id}', event)" title="Delete session"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
           </div>
           <div class="history-item-time">${relTime}</div>
         </div>
@@ -263,7 +263,7 @@
 
         // Reset summary panel
         const summaryTitle = document.getElementById('summaryDocTitle');
-        if (summaryTitle) summaryTitle.textContent = '✨ Document Summary';
+        if (summaryTitle) summaryTitle.textContent = 'Document Summary';
         const summaryText = document.getElementById('summaryPanelText');
         if (summaryText) summaryText.textContent = 'Select or upload a document and switch to this tab to see an AI-generated summary.';
 
@@ -300,7 +300,7 @@
       turnCount = 0;
       document.getElementById('historyBadge').textContent = '0 turns';
       const summaryTitle = document.getElementById('summaryDocTitle');
-      if (summaryTitle) summaryTitle.textContent = '✨ Document Summary';
+      if (summaryTitle) summaryTitle.textContent = 'Document Summary';
       const summaryText = document.getElementById('summaryPanelText');
       if (summaryText) summaryText.textContent = 'Select or upload a document and switch to this tab to see an AI-generated summary.';
 
@@ -399,7 +399,7 @@
       const iframe = document.getElementById('videoModalIframe');
       const titleEl = document.getElementById('videoModalTitle');
       if (iframe) iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1`;
-      if (titleEl) titleEl.textContent = `🎥 ${title || 'Video Tutorial'}`;
+      if (titleEl) titleEl.textContent = title || 'Video Tutorial';
       if (modal) modal.classList.remove('hidden');
     }
 
@@ -432,7 +432,7 @@
     }
 
     // ── File upload ───────────────────────────────────────────
-    const EXT_ICONS = { pdf: '📄', docx: '📝', pptx: '📊', txt: '🗒️' };
+    const EXT_ICONS = { pdf: 'PDF', docx: 'DOCX', pptx: 'PPTX', txt: 'TXT' };
 
     document.getElementById('fileInput').addEventListener('change', async function () {
       warmUpServices();  // Wake up services while files are being read
@@ -508,18 +508,18 @@
         updateProgress(currentPct, 'Parsing document text & structure…', 'indexing');
 
         const steps = [
-          { pct: 74, text: '🔍 Extracting content & splitting chunks…' },
-          { pct: 80, text: '⚡ Connecting to AI embedding service…' },
-          { pct: 86, text: '🧠 Vectorizing document chunks with FastEmbed…' },
-          { pct: 90, text: '💾 Building semantic vector index…' },
-          { pct: 93, text: '✨ Synchronizing multi-doc context…' },
-          { pct: 95, text: '⏳ Finalizing vector database index…' },
+          { pct: 74, text: 'Extracting content & splitting chunks…' },
+          { pct: 80, text: 'Connecting to AI embedding service…' },
+          { pct: 86, text: 'Vectorizing document chunks with FastEmbed…' },
+          { pct: 90, text: 'Building semantic vector index…' },
+          { pct: 93, text: 'Synchronizing multi-doc context…' },
+          { pct: 95, text: 'Finalizing vector database index…' },
         ];
         const extraMessages = [
-          '🧠 Computing embeddings (large files take a bit longer)…',
-          '⚡ Finalizing semantic vector index…',
-          '⏳ Almost ready, preparing study assistant…',
-          '✨ Verifying knowledge base…',
+          'Computing embeddings (large files take a bit longer)…',
+          'Finalizing semantic vector index…',
+          'Almost ready, preparing study assistant…',
+          'Verifying knowledge base…',
         ];
         let stepIdx = 0;
         let extraIdx = 0;
@@ -566,7 +566,7 @@
             return;
           }
 
-          updateProgress(100, `✓ Indexed ${data.chunks || 0} chunks!`, 'done');
+          updateProgress(100, `Indexed ${data.chunks || 0} chunks!`, 'done');
           const startIdx = files.length;
           fileList.forEach(f => files.push({
             name: f.name,
@@ -579,7 +579,7 @@
           }));
           renderFileList();
           saveLocalState();
-          showToast(`✓ ${fileList.length} file(s) indexed (${data.chunks} chunks)`);
+          showToast(`${fileList.length} file(s) indexed (${data.chunks} chunks)`);
           const sub = document.getElementById('chatSubtitle');
           if (sub) sub.textContent = `${files.length} file(s) loaded`;
           document.getElementById('fileCountTag').textContent = files.length + ' file' + (files.length !== 1 ? 's' : '');
@@ -712,7 +712,7 @@
             return `
             <div class="ppt-img-wrapper" onclick="openImageModal('${imgSrc}', 'Slide ${s.slide_number} - Diagram ${imgIdx + 1}')" title="Click to zoom diagram">
               <img src="${imgSrc}" alt="Slide ${s.slide_number} Figure ${imgIdx + 1}" class="ppt-slide-img" />
-              <div class="ppt-img-zoom-hint">🔍 Zoom</div>
+              <div class="ppt-img-zoom-hint">Zoom</div>
             </div>
             `;
           }).join('')}
@@ -733,7 +733,7 @@
         if (s.notes) {
           bodyContent += `
         <div class="ppt-notes-drawer">
-          <div class="ppt-notes-title">📝 Speaker Notes</div>
+          <div class="ppt-notes-title">Speaker Notes</div>
           <div>${s.notes}</div>
         </div>
       `;
@@ -846,52 +846,52 @@
       if (ext === 'pptx' || ext === 'ppt') {
         tabsHtml = `
       <button class="ppt-view-tab ${currentDocMode === 'original' ? 'active' : ''}" data-mode="original" onclick="switchDocViewMode('original')">
-        🖥️ Original Presentation
+        Original Presentation
       </button>
       <button class="ppt-view-tab ${currentDocMode === 'google' ? 'active' : ''}" data-mode="google" onclick="switchDocViewMode('google')">
-        🌐 Google Viewer
+        Google Viewer
       </button>
       <button class="ppt-view-tab ${currentDocMode === 'outline' ? 'active' : ''}" data-mode="outline" onclick="switchDocViewMode('outline')">
-        📑 Slide Outline & Content
+        Slide Outline & Content
       </button>
     `;
       } else if (ext === 'docx' || ext === 'doc') {
         tabsHtml = `
       <button class="ppt-view-tab ${currentDocMode === 'original' ? 'active' : ''}" data-mode="original" onclick="switchDocViewMode('original')">
-        📄 Original Word Document
+        Original Word Document
       </button>
       <button class="ppt-view-tab ${currentDocMode === 'google' ? 'active' : ''}" data-mode="google" onclick="switchDocViewMode('google')">
-        🌐 Google Docs Viewer
+        Google Docs Viewer
       </button>
       <button class="ppt-view-tab ${currentDocMode === 'outline' ? 'active' : ''}" data-mode="outline" onclick="switchDocViewMode('outline')">
-        📑 Extracted Text
+        Extracted Text
       </button>
     `;
       } else if (ext === 'pdf') {
         tabsHtml = `
       <button class="ppt-view-tab ${currentDocMode === 'original' ? 'active' : ''}" data-mode="original" onclick="switchDocViewMode('original')">
-        📄 Original PDF
+        Original PDF
       </button>
       <button class="ppt-view-tab ${currentDocMode === 'google' ? 'active' : ''}" data-mode="google" onclick="switchDocViewMode('google')">
-        🌐 Google Viewer
+        Google Viewer
       </button>
       <button class="ppt-view-tab ${currentDocMode === 'outline' ? 'active' : ''}" data-mode="outline" onclick="switchDocViewMode('outline')">
-        📑 Extracted Text
+        Extracted Text
       </button>
     `;
       } else if (ext === 'xlsx' || ext === 'xls') {
         tabsHtml = `
       <button class="ppt-view-tab ${currentDocMode === 'original' ? 'active' : ''}" data-mode="original" onclick="switchDocViewMode('original')">
-        📊 Original Spreadsheet
+        Original Spreadsheet
       </button>
       <button class="ppt-view-tab ${currentDocMode === 'google' ? 'active' : ''}" data-mode="google" onclick="switchDocViewMode('google')">
-        🌐 Google Sheets Viewer
+        Google Sheets Viewer
       </button>
     `;
       } else {
         tabsHtml = `
       <button class="ppt-view-tab active" data-mode="original" onclick="switchDocViewMode('original')">
-        🗒️ Original File (${ext.toUpperCase()})
+        Original File (${ext.toUpperCase()})
       </button>
     `;
       }
@@ -904,10 +904,10 @@
         </div>
         <div class="ppt-view-actions">
           <button class="ppt-ctrl-btn" onclick="downloadCurrentFile()" title="Download original file">
-            📥 Download Original (${ext.toUpperCase()})
+            Download Original (${ext.toUpperCase()})
           </button>
           <button class="ppt-ctrl-btn" onclick="toggleDocFullscreen()" title="Fullscreen">
-            ⛶ Fullscreen
+            Fullscreen
           </button>
         </div>
       </div>
@@ -948,15 +948,15 @@
         ${isLocal ? `
           <div class="ppt-local-notice">
             <div>
-              <strong>💡 Localhost Notice:</strong> Microsoft Office Online Viewer requires a public URL. When deployed on Render (<a href="https://document-ai-chatbot-71ey.onrender.com" target="_blank" style="color: inherit; text-decoration: underline;">document-ai-chatbot-71ey.onrender.com</a>), your original ${ext.toUpperCase()} file renders with 100% fidelity here. In local mode, you can <a href="javascript:downloadCurrentFile()" style="color: inherit; font-weight: bold; text-decoration: underline;">download the original file</a> or view the <strong>Outline</strong> tab.
+              <strong>Notice:</strong> Microsoft Office Online Viewer requires a public URL. When deployed on Render (<a href="https://document-ai-chatbot-71ey.onrender.com" target="_blank" style="color: inherit; text-decoration: underline;">document-ai-chatbot-71ey.onrender.com</a>), your original ${ext.toUpperCase()} file renders with 100% fidelity here. In local mode, you can <a href="javascript:downloadCurrentFile()" style="color: inherit; font-weight: bold; text-decoration: underline;">download the original file</a> or view the <strong>Outline</strong> tab.
             </div>
           </div>
         ` : `
           <div class="ppt-local-notice" style="background: rgba(59, 110, 246, 0.08); border-color: rgba(59, 110, 246, 0.2); font-size: 11px; padding: 6px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
-            <span>💡 Viewing via Microsoft Online. If it shows <em>"File not found"</em> (e.g. during server cold start), switch to:</span>
+            <span>Viewing via Microsoft Online. If it shows <em>"File not found"</em> (e.g. during server cold start), switch to:</span>
             <div style="display: flex; gap: 6px; flex-shrink: 0;">
-              <button class="btn btn-sm" onclick="switchDocViewMode('outline')" style="padding: 2px 8px; font-size: 11px; cursor: pointer;">📊 Slides / Text</button>
-              <button class="btn btn-sm" onclick="switchDocViewMode('google')" style="padding: 2px 8px; font-size: 11px; cursor: pointer;">🌐 Google Viewer</button>
+              <button class="btn btn-sm" onclick="switchDocViewMode('outline')" style="padding: 2px 8px; font-size: 11px; cursor: pointer;">Slides / Text</button>
+              <button class="btn btn-sm" onclick="switchDocViewMode('google')" style="padding: 2px 8px; font-size: 11px; cursor: pointer;">Google Viewer</button>
             </div>
           </div>
         `}
@@ -973,7 +973,7 @@
       ${isLocal ? `
         <div class="ppt-local-notice">
           <div>
-            <strong>💡 Localhost Notice:</strong> Google Viewer requires a public domain. When deployed, it embeds directly.
+            <strong>Notice:</strong> Google Viewer requires a public domain. When deployed, it embeds directly.
           </div>
         </div>
       ` : ''}
@@ -1025,7 +1025,7 @@
         </div>
         <div class="ppt-controls-bar">
           <div class="ppt-ctrl-group">
-            <button class="ppt-ctrl-btn" onclick="togglePptSidebar()" title="Toggle Slides Outline">☰ Slides</button>
+            <button class="ppt-ctrl-btn" onclick="togglePptSidebar()" title="Toggle Slides Outline">Slides</button>
             <button class="ppt-ctrl-btn" id="pptFirstBtn" onclick="renderPptSlide(0)" title="First slide">|◀</button>
             <button class="ppt-ctrl-btn" id="pptPrevBtn" onclick="prevPptSlide()" title="Previous slide (Left Arrow)">◀</button>
           </div>
@@ -1037,7 +1037,7 @@
           <div class="ppt-ctrl-group">
             <button class="ppt-ctrl-btn" id="pptNextBtn" onclick="nextPptSlide()" title="Next slide (Right Arrow / Space)">▶</button>
             <button class="ppt-ctrl-btn" id="pptLastBtn" onclick="renderPptSlide(currentPptSlides.length - 1)" title="Last slide">▶|</button>
-            <button class="ppt-ctrl-btn" onclick="toggleSlideTheme()" title="Toggle Classic White / Dark Canvas">🎨 Theme</button>
+            <button class="ppt-ctrl-btn" onclick="toggleSlideTheme()" title="Toggle Classic White / Dark Canvas">Theme</button>
           </div>
         </div>
       </div>
@@ -1277,7 +1277,7 @@
       const ytBox = document.createElement('div');
       ytBox.className = 'yt-sources-box';
       ytBox.innerHTML = `
-    <div class="yt-sources-title">🎥 Recommended Video Tutorials:</div>
+    <div class="yt-sources-title">Recommended Video Tutorials:</div>
     <div class="yt-cards-container">
       ${sources.map(v => {
         const safeTitleAttr = escapeHtml(v.title || '');
@@ -1314,8 +1314,11 @@
     function toggleChat() {
       chatOpen = !chatOpen;
       document.getElementById('chatWindow').classList.toggle('hidden', !chatOpen);
-      document.getElementById('chatFab').classList.toggle('open', chatOpen);
-      document.getElementById('chatFab').textContent = chatOpen ? '✕' : '💬';
+      const fab = document.getElementById('chatFab');
+      fab.classList.toggle('open', chatOpen);
+      fab.innerHTML = chatOpen
+        ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'
+        : '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
       if (chatOpen) document.getElementById('chatInput').focus();
     }
 
@@ -1394,7 +1397,7 @@
       } catch (err) {
         clearTimeout(timeoutId);
         if (err && err.name === 'AbortError') {
-          typingBubble.textContent = '⏱️ The request timed out (server took longer than 75s). The server may be waking up from sleep or busy. Please try asking again in a few moments.';
+          typingBubble.textContent = 'The request timed out (server took longer than 75s). The server may be waking up from sleep or busy. Please try asking again in a few moments.';
         } else {
           const isLocal = API_BASE.includes('localhost') || API_BASE.includes('127.0.0.1');
           if (isLocal) {
@@ -1459,7 +1462,7 @@
         // If summary not loaded for current file, generate it
         const docName = getActiveDocName();
         const titleEl = document.getElementById('summaryDocTitle');
-        if (titleEl) titleEl.textContent = `✨ Summary of ${docName}`;
+        if (titleEl) titleEl.textContent = `Summary: ${docName}`;
         const textEl = document.getElementById('summaryPanelText');
         if (textEl && (textEl.textContent.includes('Select or upload') || textEl.textContent.trim() === '')) {
           summarizeActiveFile();
@@ -1479,7 +1482,7 @@
         msgs.innerHTML = `
       <div class="chat-welcome-state">
         <div class="chat-welcome-icon-box">
-          <span class="chat-welcome-icon">📄</span>
+          <span class="chat-welcome-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg></span>
         </div>
         <div class="chat-welcome-title">Chat Started</div>
         <div class="chat-welcome-desc">
@@ -1589,7 +1592,7 @@
         const clientText = f ? f.text : null;
 
         const titleEl = document.getElementById('summaryDocTitle');
-        if (titleEl) titleEl.textContent = `✨ Summary of ${targetFilename}`;
+        if (titleEl) titleEl.textContent = `Summary: ${targetFilename}`;
 
         // Render loading spinner into summaryPanelText BEFORE switching tabs
         // so switchChatPanelTab doesn't see an empty panel and trigger a duplicate fetch
@@ -1612,7 +1615,7 @@
 
         const btn = document.getElementById('btnRefreshSummary');
         if (btn) {
-          btn.textContent = '⏳ Summarizing…';
+          btn.textContent = 'Summarizing…';
           btn.disabled = true;
         }
 
@@ -1646,12 +1649,12 @@
           if (textEl) {
             textEl.innerHTML = `
           <div class="summary-loading-card" style="background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(99, 102, 241, 0.25);">
-            <div style="font-size: 26px;">✨</div>
+            <div style="display:flex; justify-content:center; align-items:center; margin-bottom:8px;"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg></div>
             <div class="summary-loading-title">Document Summary Ready to Generate</div>
             <div class="summary-loading-sub">The cloud server was busy or warming up. Click below to load your summary.</div>
             <div style="margin-top: 6px;">
               <button class="summary-btn-action" style="background: #6366f1; color: #fff; border-color: #6366f1; font-weight: 600; padding: 7px 18px; border-radius: 8px;" onclick="summarizeFile('${targetFilename}')">
-                🔄 Load Summary Now
+                Load Summary Now
               </button>
             </div>
           </div>
@@ -1660,7 +1663,7 @@
           showToast('Document summary ready — click Load Summary');
         } finally {
           if (btn) {
-            btn.textContent = '🔄 Regenerate';
+            btn.textContent = 'Regenerate';
             btn.disabled = false;
           }
         }
