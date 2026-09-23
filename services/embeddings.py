@@ -18,13 +18,13 @@ class RemoteEmbeddings:
     def __init__(self, service_url: str):
         self.service_url = service_url.rstrip("/")
 
-    def embed_documents(self, texts: list[str], max_retries: int = 5) -> list[list[float]]:
+    def embed_documents(self, texts: list[str], max_retries: int = 3) -> list[list[float]]:
         """Embed a list of document texts via the remote service with warm-up retry and batching."""
         if not texts:
             return []
 
         all_embeddings = []
-        batch_size = 12
+        batch_size = 32
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             payload = json.dumps({"texts": batch}).encode("utf-8")
@@ -38,15 +38,15 @@ class RemoteEmbeddings:
                         headers={"Content-Type": "application/json"},
                         method="POST",
                     )
-                    with urllib.request.urlopen(req, timeout=60) as resp:
+                    with urllib.request.urlopen(req, timeout=40) as resp:
                         data = json.loads(resp.read().decode("utf-8"))
                     all_embeddings.extend(data["embeddings"])
                     last_err = None
                     break
                 except Exception as e:
                     last_err = e
-                    print(f"Remote embedding batch {i//batch_size + 1} attempt {attempt + 1}/{max_retries} failed ({e}). Waking up / retrying in 5s...")
-                    time.sleep(5)
+                    print(f"Remote embedding batch {i//batch_size + 1} attempt {attempt + 1}/{max_retries} failed ({e}). Waking up / retrying in 3s...")
+                    time.sleep(3)
 
             if last_err is not None:
                 raise last_err

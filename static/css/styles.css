@@ -546,12 +546,14 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 170px;
+      flex: 1;
+      margin-right: 8px;
     }
 
     .progress-percent {
       color: var(--accent);
       font-weight: 600;
+      flex-shrink: 0;
     }
 
     .progress-bar-bg {
@@ -566,15 +568,32 @@
       height: 100%;
       background: var(--accent);
       border-radius: 4px;
-      transition: width 0.2s ease;
+      transition: width 0.35s ease;
+    }
+
+    .progress-bar-fill.indexing {
+      background: linear-gradient(90deg, #3b6ef6 0%, #70a6ff 50%, #3b6ef6 100%);
+      background-size: 200% 100%;
+      animation: progressShimmer 1.8s ease-in-out infinite;
+    }
+
+    @keyframes progressShimmer {
+      0% {
+        background-position: 100% 0;
+      }
+      100% {
+        background-position: -100% 0;
+      }
     }
 
     .progress-bar-fill.done {
       background: var(--success);
+      animation: none;
     }
 
     .progress-bar-fill.error {
       background: var(--danger);
+      animation: none;
     }
 
     /* ── Main content ─────────────────────────────────────── */

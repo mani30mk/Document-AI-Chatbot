@@ -33,7 +33,7 @@
       fetch(`${API_BASE}/health`).catch(() => { });
       // Wake embedding service (if configured)
       if (EMBED_SERVICE_URL) {
-        fetch(`${EMBED_SERVICE_URL}/health`).catch(() => { });
+        fetch(`${EMBED_SERVICE_URL}/health`, { mode: 'no-cors' }).catch(() => { });
       }
     }
 
@@ -441,6 +441,7 @@
     });
 
     const zone = document.getElementById('uploadZone');
+    zone.addEventListener('mouseenter', () => warmUpServices());
     zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
     zone.addEventListener('drop', async e => {
@@ -501,26 +502,43 @@
         }
       };
 
-      // 2. Upload complete, server is parsing text and indexing vectors (70% - 97%)
+      // 2. Upload complete, server is parsing text and indexing vectors (68% - 99%)
       xhr.upload.onload = function () {
-        let currentPct = 70;
-        updateProgress(currentPct, 'Parsing document text & structure…', '');
+        let currentPct = 68;
+        updateProgress(currentPct, 'Parsing document text & structure…', 'indexing');
 
         const steps = [
-          { pct: 75, text: '🔍 Extracting content & splitting chunks…' },
+          { pct: 74, text: '🔍 Extracting content & splitting chunks…' },
           { pct: 80, text: '⚡ Connecting to AI embedding service…' },
-          { pct: 85, text: '🧠 Vectorizing document chunks with FastEmbed…' },
+          { pct: 86, text: '🧠 Vectorizing document chunks with FastEmbed…' },
           { pct: 90, text: '💾 Building semantic vector index…' },
-          { pct: 94, text: '✨ Finalizing document context…' },
-          { pct: 97, text: '⏳ Finalizing search index (almost ready)…' },
+          { pct: 93, text: '✨ Synchronizing multi-doc context…' },
+          { pct: 95, text: '⏳ Finalizing vector database index…' },
+        ];
+        const extraMessages = [
+          '🧠 Computing embeddings (large files take a bit longer)…',
+          '⚡ Finalizing semantic vector index…',
+          '⏳ Almost ready, preparing study assistant…',
+          '✨ Verifying knowledge base…',
         ];
         let stepIdx = 0;
+        let extraIdx = 0;
+
         serverProcessingInterval = setInterval(() => {
           if (stepIdx < steps.length) {
-            updateProgress(steps[stepIdx].pct, steps[stepIdx].text, '');
+            updateProgress(steps[stepIdx].pct, steps[stepIdx].text, 'indexing');
+            currentPct = steps[stepIdx].pct;
             stepIdx++;
+          } else {
+            // Gentle continuous creep up to 99% with active rotating status messages
+            if (currentPct < 99) {
+              currentPct += 1;
+            }
+            const msg = extraMessages[extraIdx % extraMessages.length];
+            extraIdx++;
+            updateProgress(currentPct, msg, 'indexing');
           }
-        }, 3500);
+        }, 2800);
       };
 
       function cleanupProcessingInterval() {
@@ -585,6 +603,14 @@
         updateProgress(100, 'Network connection error', 'error');
         showToast('Network error — cannot reach server');
         hideProgress(4000);
+      };
+
+      xhr.timeout = 180000;
+      xhr.ontimeout = function () {
+        cleanupProcessingInterval();
+        updateProgress(100, 'Upload timed out. Please try again.', 'error');
+        showToast('Upload timed out — server took too long to respond');
+        hideProgress(5000);
       };
 
       xhr.send(form);

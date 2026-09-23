@@ -195,8 +195,9 @@ async def upload_files(
                             "metadata": meta,
                             "embedding": vec,
                         })
-                    # Batch insert
-                    supabase.table("documents").insert(rows).execute()
+                    # Batch insert in chunks of 50 to avoid request payload size limits
+                    for b_idx in range(0, len(rows), 50):
+                        supabase.table("documents").insert(rows[b_idx:b_idx + 50]).execute()
                     stored_in_supabase = True
                 except Exception as err:
                     if is_rate_limit_error(err):
